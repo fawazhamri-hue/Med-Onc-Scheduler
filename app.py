@@ -254,7 +254,21 @@ def api_export_docx():
         return jsonify({"error": traceback.format_exc(), "message": str(e)}), 500
 
 
-@app.route("/api/import/rota", methods=["POST"])
+@app.route("/api/import/patients", methods=["POST"])
+def api_import_patients():
+    try:
+        from importer_rota import parse_patient_numbers
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file uploaded"}), 400
+        tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+        f.save(tmp.name)
+        tmp.close()
+        clinics = parse_patient_numbers(tmp.name)
+        os.unlink(tmp.name)
+        return jsonify(clinics)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 def api_import_rota():
     try:
         from importer_rota import parse_rota, diff_against_db, apply_proposal

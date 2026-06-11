@@ -233,11 +233,14 @@
     <h1>OncoScheduler</h1>
     <p>KFSHRC · Med Onc CCoE</p>
   </div>
-  <div class="nav-item active" data-page="schedule" onclick="showPage('schedule')">
-    <span class="nav-icon">📅</span><span>Schedule</span>
-  </div>
-  <div class="nav-item" data-page="people" onclick="showPage('people')">
+  <div class="nav-item active" data-page="people" onclick="showPage('people')">
     <span class="nav-icon">👥</span><span>People</span>
+  </div>
+  <div class="nav-item" data-page="week" onclick="showPage('week')">
+    <span class="nav-icon">📅</span><span>Week Setup</span>
+  </div>
+  <div class="nav-item" data-page="generate" onclick="showPage('generate')">
+    <span class="nav-icon">▶</span><span>Generate</span>
   </div>
   <div class="nav-item" data-page="import" onclick="showPage('import')">
     <span class="nav-icon">⇩</span><span>Import ROTA</span>
@@ -252,7 +255,7 @@
 <div id="content">
 
   <!-- ══ SCHEDULE PAGE ══ -->
-  <div class="page active" id="page-schedule">
+  <div class="page" id="page-week">
     <div class="page-header">
       <div class="page-header-left">
         <h2>Schedule</h2>
@@ -264,6 +267,10 @@
       <label style="font-size:13px;font-weight:600">Week start (Sunday):</label>
       <input type="date" id="week-start" onchange="onWeekChange()">
       <button class="btn btn-ghost" onclick="loadTemplate()">Load template clinics</button>
+      <label class="btn btn-ghost" style="cursor:pointer">
+        Import patient numbers (Excel)
+        <input type="file" id="patients-file" accept=".xlsx" style="display:none" onchange="importPatients()">
+      </label>
       <button class="btn btn-ghost" onclick="saveAsTemplate()">Save as template</button>
     </div>
 
@@ -282,8 +289,17 @@
           <div id="clinic-list"></div>
         </div>
 
-        <!-- generate -->
-        <div class="card" style="padding:16px">
+
+
+  <!-- ══ GENERATE PAGE ══ -->
+  <div class="page" id="page-generate">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>Generate</h2>
+        <p>Run the solver and download the schedule</p>
+      </div>
+    </div>
+    <div class="card" style="padding:16px">
           <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
             <button class="btn btn-primary" id="gen-btn" onclick="generate()">
               ▶ &nbsp;Generate schedule
@@ -327,7 +343,7 @@
   </div>
 
   <!-- ══ PEOPLE PAGE ══ -->
-  <div class="page" id="page-people">
+  <div class="page active" id="page-people">
     <div class="page-header">
       <div class="page-header-left">
         <h2>People</h2>
@@ -885,6 +901,23 @@ function saveClinic() {
   renderClinics();
 }
 
+async function importPatients() {
+  const f = document.getElementById('patients-file').files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('file', f);
+  const res = await fetch('/api/import/patients', { method: 'POST', body: fd });
+  const data = await res.json();
+  if (data.error) { alert('Error: ' + data.error); return; }
+  if (!data.length) { alert('No clinics found in that file.'); return; }
+  if (state.clinics.length && !confirm(`Replace the current ${state.clinics.length} clinics with ${data.length} imported clinics?`)) return;
+  state.clinics = data;
+  state.selClinicIdx = null;
+  renderClinics();
+  // reset file input so same file can be re-imported
+  document.getElementById('patients-file').value = '';
+}
+
 async function loadTemplate() {
   const res = await fetch('/api/template');
   const tmpl = await res.json();
@@ -1211,6 +1244,7 @@ document.querySelectorAll('.modal-overlay').forEach(m => {
   const sun = new Date(today); sun.setDate(today.getDate() + diff);
   document.getElementById('week-start').value = sun.toISOString().slice(0,10);
   await loadPeople();
+  showPage('people');
 })();
 </script>
 </body>
