@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OncoScheduler — Medical Oncology, KFSHRC</title>
+<style>
+  :root {
+    --bg: #eef2f7;
+    --surface: #fff;
+    --border: #d9e2ec;
+    --sidebar: #16314f;
+    --sidebar-sel: #1f4a73;
+    --sidebar-accent: #4da3ff;
+    --primary: #2570b5;
+    --primary-h: #1d5c96;
+    --text: #1e2a3a;
+    --muted: #5c6b7f;
+    --row-hover: #f4f8fc;
+    --row-sel: #e8f1fb;
+    --ok-bg: #e3f4ea; --ok-fg: #1e7e46;
+    --warn-bg: #fdf3d7; --warn-fg: #9a6b00;
+    --err-bg: #fde9e7; --err-fg: #b3261e;
+    --font: "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text);
+         display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── sidebar ── */
+  #sidebar { width: 210px; min-width: 210px; background: var(--sidebar);
+             display: flex; flex-direction: column; }
+  .brand { padding: 22px 18px 20px; }
+  .brand h1 { color: #fff; font-size: 15px; font-weight: 700; }
+  .brand p  { color: #8fb3d9; font-size: 11px; margin-top: 3px; }
+  .nav-item { display: flex; align-items: center; cursor: pointer;
+              padding: 10px 18px; color: #c8d9ea; font-size: 13px;
+              border-left: 4px solid transparent; transition: background .15s; }
+  .nav-item:hover { background: var(--sidebar-sel); }
+  .nav-item.active { background: var(--sidebar-sel); color: #fff;
+                     font-weight: 700; border-left-color: var(--sidebar-accent); }
+  .nav-icon { margin-right: 10px; font-size: 15px; }
+  .sidebar-foot { margin-top: auto; padding: 12px 18px;
+                  color: #5d7b9a; font-size: 10px; }
+
+  /* ── content ── */
+  #content { flex: 1; overflow-y: auto; padding: 0; }
+  .page { display: none; padding: 28px 28px 40px; }
+  .page.active { display: block; }
+
+  /* ── page header ── */
+  .page-header { display: flex; align-items: baseline;
+                 justify-content: space-between; margin-bottom: 20px; }
+  .page-header-left h2 { font-size: 22px; font-weight: 700; }
+  .page-header-left p  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* ── buttons ── */
+  .btn { display: inline-flex; align-items: center; gap: 6px;
+         font-family: var(--font); font-size: 13px; font-weight: 600;
+         padding: 8px 16px; border-radius: 6px; border: none;
+         cursor: pointer; transition: background .15s; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-h); }
+  .btn-primary:disabled { background: #94b8d9; cursor: not-allowed; }
+  .btn-ghost { background: var(--surface); color: var(--primary);
+               border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--row-sel); }
+  .btn-danger { background: #fde9e7; color: #b3261e;
+                border: 1px solid #f5c6c2; }
+  .btn-danger:hover { background: #fbd5d2; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* ── card ── */
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 8px; }
+
+  /* ── table rows ── */
+  .tbl-header { display: grid; padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                font-size: 11px; font-weight: 700; color: var(--muted);
+                text-transform: uppercase; letter-spacing: .04em; }
+  .tbl-row { display: grid; padding: 10px 14px; border-bottom: 1px solid #f0f4f8;
+             align-items: center; cursor: pointer; transition: background .1s; }
+  .tbl-row:hover { background: var(--row-hover); }
+  .tbl-row.selected { background: var(--row-sel); }
+  .tbl-row:last-child { border-bottom: none; }
+
+  /* people table: name / role / rotation / clinics / status */
+  .people-grid { grid-template-columns: 1fr 110px 120px 70px 100px; }
+
+  /* clinic table */
+  .clinic-grid { grid-template-columns: 70px 1fr 130px 90px 80px 80px; }
+
+  /* badge */
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 20px;
+           font-size: 11px; font-weight: 700; white-space: nowrap; }
+  .badge-fellow   { background: #dbeafe; color: #1d4ed8; }
+  .badge-np       { background: #ede9fe; color: #6d28d9; }
+  .badge-resident { background: #e2e8f0; color: #475569; }
+  .badge-assistant{ background: #ccfbf1; color: #0f766e; }
+  .badge-external { background: #ffedd5; color: #c2410c; }
+  .badge-gi { background: #dbeafe; color: #1d4ed8; }
+  .badge-breast { background: #fce7f3; color: #be185d; }
+  .badge-sarcoma { background: #fef3c7; color: #b45309; }
+  .badge-gyne { background: #d1fae5; color: #047857; }
+  .badge-am { background: #e0f2fe; color: #0369a1; }
+  .badge-pm { background: #ede9fe; color: #6d28d9; }
+  .badge-addon { background: #fce4b5; color: #92400e; }
+  .status-active { color: #1e7e46; font-weight: 600; font-size: 12px; }
+  .status-inactive { color: #9aa7b5; font-size: 12px; }
+
+  /* ── detail panel ── */
+  .detail-panel { width: 340px; min-width: 340px; background: var(--surface);
+                  border-left: 1px solid var(--border); padding: 20px;
+                  overflow-y: auto; }
+  .detail-panel h3 { font-size: 15px; margin-bottom: 16px; }
+  .detail-section { margin-bottom: 16px; }
+  .detail-section label { font-size: 11px; font-weight: 700; color: var(--muted);
+                          text-transform: uppercase; letter-spacing: .04em;
+                          display: block; margin-bottom: 6px; }
+  .detail-list { border: 1px solid var(--border); border-radius: 6px;
+                 min-height: 60px; margin-bottom: 6px; background: #fafcfe; }
+  .detail-list-item { padding: 7px 10px; font-size: 12px;
+                      border-bottom: 1px solid #f0f4f8; display: flex;
+                      justify-content: space-between; align-items: center; }
+  .detail-list-item:last-child { border-bottom: none; }
+  .detail-list-empty { padding: 10px; color: var(--muted); font-size: 12px; }
+  .btn-row { display: flex; gap: 6px; }
+
+  /* ── two-column layout ── */
+  .split { display: flex; gap: 20px; }
+  .split-main { flex: 1; min-width: 0; }
+  .split-side { width: 340px; min-width: 340px; }
+
+  /* ── people+detail layout ── */
+  .people-layout { display: flex; gap: 0; height: calc(100vh - 140px); }
+  .people-list-wrap { flex: 1; overflow-y: auto; }
+  .people-detail { width: 340px; min-width: 340px; border-left: 1px solid var(--border);
+                   padding: 20px; overflow-y: auto; background: var(--surface); }
+
+  /* ── day group header ── */
+  .day-header { background: #e9f0f8; padding: 8px 14px;
+                font-size: 12px; font-weight: 700; color: #1f4a73; }
+
+  /* ── generate log ── */
+  #gen-log { font-family: "Consolas", monospace; font-size: 12px;
+             background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; padding: 14px; min-height: 200px;
+             max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+  .log-ok   { color: #1e7e46; font-weight: 700; }
+  .log-warn { color: #9a6b00; }
+  .log-err  { color: #b3261e; }
+  .log-muted{ color: var(--muted); }
+  .banner { padding: 10px 16px; border-radius: 6px; font-size: 13px;
+            font-weight: 600; margin-bottom: 16px; display: none; }
+  .banner.ok   { background: var(--ok-bg); color: var(--ok-fg); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn-fg); }
+  .banner.err  { background: var(--err-bg); color: var(--err-fg); }
+
+  /* ── import ── */
+  .import-tbl-header { grid-template-columns: 50px 100px 130px 160px 1fr; }
+  .import-tbl-row    { grid-template-columns: 50px 100px 130px 160px 1fr; }
+  .import-review { background: #fdf3d7 !important; }
+  .import-exists { color: var(--muted); }
+
+  /* ── forms ── */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-group label { font-size: 11px; font-weight: 700; color: var(--muted);
+                      text-transform: uppercase; letter-spacing: .04em; }
+  .form-group input, .form-group select {
+    font-family: var(--font); font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--text); }
+  .form-group input:focus, .form-group select:focus {
+    outline: none; border-color: var(--primary); }
+
+  /* ── modal ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35);
+                   display: flex; align-items: center; justify-content: center;
+                   z-index: 100; display: none; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border-radius: 10px; padding: 24px;
+           width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
+  .modal h3 { font-size: 16px; margin-bottom: 18px; }
+  .modal-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+  /* ── week toolbar ── */
+  .week-toolbar { display: flex; align-items: center; gap: 10px;
+                  margin-bottom: 16px; flex-wrap: wrap; }
+  .week-toolbar input[type=date] {
+    font-family: var(--font); font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 6px; }
+  .pts-input { width: 60px; font-family: var(--font); font-size: 12px;
+               padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px;
+               text-align: center; }
+
+  /* ── rules grid ── */
+  .rules-group { margin-bottom: 20px; }
+  .rules-group h4 { font-size: 13px; font-weight: 700; margin-bottom: 10px;
+                    padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .rules-row { display: flex; align-items: center; padding: 6px 0;
+               border-bottom: 1px solid #f4f8fc; gap: 12px; }
+  .rules-row label { flex: 1; font-size: 13px; color: var(--text); }
+  .rules-row input { width: 120px; font-family: var(--font); font-size: 13px;
+                     padding: 5px 8px; border: 1px solid var(--border);
+                     border-radius: 4px; }
+  .note-box { background: #f8fafc; border: 1px solid var(--border);
+              border-radius: 6px; padding: 12px; font-size: 11px;
+              color: var(--muted); font-family: monospace; line-height: 1.6; }
+
+  /* ── spinner ── */
+  .spinner { display: inline-block; width: 16px; height: 16px;
+             border: 2px solid #fff; border-top-color: transparent;
+             border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── responsive ── */
+  @media (max-width: 900px) {
+    #sidebar { width: 50px; min-width: 50px; }
+    .brand, .nav-item span, .sidebar-foot { display: none; }
+    .nav-item { justify-content: center; padding: 14px 0; }
+    .nav-icon { margin: 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<nav id="sidebar">
+  <div class="brand">
+    <h1>OncoScheduler</h1>
+    <p>KFSHRC · Med Onc CCoE</p>
+  </div>
+  <div class="nav-item active" data-page="schedule" onclick="showPage('schedule')">
+    <span class="nav-icon">📅</span><span>Schedule</span>
+  </div>
+  <div class="nav-item" data-page="people" onclick="showPage('people')">
+    <span class="nav-icon">👥</span><span>People</span>
+  </div>
+  <div class="nav-item" data-page="import" onclick="showPage('import')">
+    <span class="nav-icon">⇩</span><span>Import ROTA</span>
+  </div>
+  <div class="nav-item" data-page="rules" onclick="showPage('rules')">
+    <span class="nav-icon">⚙</span><span>Rules</span>
+  </div>
+  <div class="sidebar-foot">v2 · Web</div>
+</nav>
+
+<!-- CONTENT -->
+<div id="content">
+
+  <!-- ══ SCHEDULE PAGE ══ -->
+  <div class="page active" id="page-schedule">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>Schedule</h2>
+        <p>Set the week, enter patient counts, generate and download</p>
+      </div>
+    </div>
+
+    <div class="week-toolbar">
+      <label style="font-size:13px;font-weight:600">Week start (Sunday):</label>
+      <input type="date" id="week-start" onchange="onWeekChange()">
+      <button class="btn btn-ghost" onclick="loadTemplate()">Load template clinics</button>
+      <button class="btn btn-ghost" onclick="saveAsTemplate()">Save as template</button>
+    </div>
+
+    <div class="split" style="gap:20px">
+      <!-- clinic list -->
+      <div class="split-main">
+        <div class="card" style="margin-bottom:12px">
+          <div style="padding:12px 14px;display:flex;gap:8px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" onclick="openAddClinicModal()">＋ Add clinic</button>
+            <button class="btn btn-ghost btn-sm" onclick="toggleAddOn()">Toggle AddOn</button>
+            <button class="btn btn-ghost btn-sm" onclick="deleteClinic()">Delete</button>
+            <span style="font-size:11px;color:var(--muted);align-self:center">
+              Click a row to select · edit patient count inline
+            </span>
+          </div>
+          <div id="clinic-list"></div>
+        </div>
+
+        <!-- generate -->
+        <div class="card" style="padding:16px">
+          <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+            <button class="btn btn-primary" id="gen-btn" onclick="generate()">
+              ▶ &nbsp;Generate schedule
+            </button>
+            <button class="btn btn-ghost" id="dl-xlsx" style="display:none" onclick="downloadXlsx()">
+              ↓ Excel
+            </button>
+            <button class="btn btn-ghost" id="dl-docx" style="display:none" onclick="downloadDocx()">
+              ↓ Word
+            </button>
+          </div>
+          <div class="banner" id="gen-banner"></div>
+          <div id="gen-log"></div>
+        </div>
+      </div>
+
+      <!-- right panel: pins + exclusions -->
+      <div class="split-side">
+        <div class="card" style="padding:16px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">
+            Purple pins (this week)
+          </div>
+          <div id="week-pins-list" class="detail-list"></div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn btn-ghost btn-sm" onclick="openAddPinModal()">Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="deleteWeekPin()">Remove</button>
+          </div>
+        </div>
+        <div class="card" style="padding:16px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">
+            One-off exclusions (this week)
+          </div>
+          <div id="week-excl-list" class="detail-list"></div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn btn-ghost btn-sm" onclick="openAddExclModal()">Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="deleteWeekExcl()">Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PEOPLE PAGE ══ -->
+  <div class="page" id="page-people">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>People</h2>
+        <p>Permanent roster — entered once, kept forever</p>
+      </div>
+      <button class="btn btn-primary" onclick="openAddPersonModal()">＋ Add person</button>
+    </div>
+    <div class="people-layout card">
+      <div class="people-list-wrap">
+        <div class="tbl-header people-grid" style="background:#fafcfe">
+          <span>Name</span><span>Role</span><span>Rotation</span>
+          <span>Clinics</span><span>Status</span>
+        </div>
+        <div id="people-list"></div>
+      </div>
+      <div class="people-detail">
+        <h3 id="detail-name">Select a person</h3>
+        <div style="display:flex;gap:6px;margin-bottom:16px">
+          <button class="btn btn-ghost btn-sm" onclick="editSelectedPerson()">Edit</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleActivePerson()">Toggle active</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteSelectedPerson()">Delete</button>
+        </div>
+        <div class="detail-section">
+          <label>Leaves (date ranges)</label>
+          <div id="d-leaves" class="detail-list"></div>
+          <div class="btn-row" style="margin-top:6px">
+            <button class="btn btn-ghost btn-sm" onclick="addLeave()">Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="removeLeave()">Remove</button>
+          </div>
+        </div>
+        <div class="detail-section">
+          <label>Recurring pins (LTC)</label>
+          <div id="d-pins" class="detail-list"></div>
+          <div class="btn-row" style="margin-top:6px">
+            <button class="btn btn-ghost btn-sm" onclick="addPin()">Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="removePin()">Remove</button>
+          </div>
+        </div>
+        <div class="detail-section">
+          <label>Recurring exclusions</label>
+          <div id="d-excls" class="detail-list"></div>
+          <div class="btn-row" style="margin-top:6px">
+            <button class="btn btn-ghost btn-sm" onclick="addExcl()">Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="removeExcl()">Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ IMPORT PAGE ══ -->
+  <div class="page" id="page-import">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>Import ROTA</h2>
+        <p>Load the secretary's ROTA file — review proposals, apply selected</p>
+      </div>
+      <label class="btn btn-primary" style="cursor:pointer">
+        Upload ROTA file
+        <input type="file" id="rota-file" accept=".xlsx" style="display:none" onchange="loadRota()">
+      </label>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border);
+                  display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary btn-sm" onclick="applySelected()">Apply selected</button>
+        <button class="btn btn-ghost btn-sm" onclick="selectAll(true)">Select all</button>
+        <button class="btn btn-ghost btn-sm" onclick="selectAll(false)">Deselect all</button>
+        <span id="import-count" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div class="tbl-header import-tbl-header">
+        <span>Apply</span><span>Action</span><span>Name</span>
+        <span>Status</span><span>Detail</span>
+      </div>
+      <div id="import-list"></div>
+    </div>
+    <div class="card" style="padding:14px">
+      <pre id="import-log" style="font-size:12px;color:var(--text);white-space:pre-wrap;
+           min-height:60px"></pre>
+    </div>
+  </div>
+
+  <!-- ══ RULES PAGE ══ -->
+  <div class="page" id="page-rules">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>Rules</h2>
+        <p>Solver weights — changes apply on the next Generate run</p>
+      </div>
+      <button class="btn btn-primary" onclick="saveRules()">Save settings</button>
+    </div>
+    <div class="card" style="padding:20px;max-width:700px">
+      <div id="rules-form"></div>
+      <div class="note-box" style="margin-top:20px">
+Weight ordering invariant (don't break this):<br>
+chemo_shortfall = addon_uncovered  &gt;  fellow_short  &gt;  capacity_short ≥ assist_for_chemo  &gt;<br>
+under_min_res = rotation_fairness  &gt;  under_min_fellow  &gt;  over_assign  &gt;  rotation_match  &gt;  fairness  &gt;  band_pref
+      </div>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<!-- ══ MODALS ══ -->
+<div class="modal-overlay" id="modal-person">
+  <div class="modal">
+    <h3 id="modal-person-title">Add person</h3>
+    <div class="form-grid">
+      <div class="form-group"><label>Name</label><input id="mp-name" placeholder="e.g. Othman"></div>
+      <div class="form-group"><label>Kind</label>
+        <select id="mp-kind">
+          <option>fellow</option><option>np</option><option>resident</option>
+          <option>assistant</option><option>external</option>
+        </select></div>
+      <div class="form-group"><label>Rotation</label>
+        <select id="mp-rotation">
+          <option value="">—</option>
+          <option>GI/GU</option><option>Breast</option>
+          <option>Sarcoma</option><option>Gyne/Lung</option>
+        </select></div>
+      <div class="form-group"><label>Min clinics/wk</label><input id="mp-min" type="number" value="5"></div>
+      <div class="form-group"><label>Max clinics/wk</label><input id="mp-max" type="number" value="7"></div>
+      <div class="form-group"><label>Start date (blank=always)</label><input id="mp-start" type="date"></div>
+      <div class="form-group"><label>End date (blank=always)</label><input id="mp-end" type="date"></div>
+      <div class="form-group full"><label>Notes</label><input id="mp-notes"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-person')">Cancel</button>
+      <button class="btn btn-primary" onclick="savePerson()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-clinic">
+  <div class="modal">
+    <h3>Add clinic</h3>
+    <div class="form-grid">
+      <div class="form-group"><label>Day</label>
+        <select id="mc-day">
+          <option value="sun">Sunday</option><option value="mon">Monday</option>
+          <option value="tue">Tuesday</option><option value="wed">Wednesday</option>
+          <option value="thu">Thursday</option>
+        </select></div>
+      <div class="form-group"><label>Session</label>
+        <select id="mc-session"><option>AM</option><option>PM</option></select></div>
+      <div class="form-group"><label>Consultant</label><input id="mc-cons"></div>
+      <div class="form-group"><label>Specialty</label>
+        <select id="mc-spec">
+          <option>GI/GU</option><option>Breast</option>
+          <option>Sarcoma</option><option>Gyne/Lung</option>
+        </select></div>
+      <div class="form-group"><label>Patients</label><input id="mc-pts" type="number" value="0"></div>
+      <div class="form-group"><label>Type</label>
+        <select id="mc-type"><option value="">Regular</option><option value="AddOn">AddOn</option></select>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-clinic')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveClinic()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-pin">
+  <div class="modal" style="width:360px">
+    <h3 id="modal-pin-title">Add purple pin</h3>
+    <div class="form-grid">
+      <div class="form-group full"><label>Person name</label><input id="mpin-name" placeholder="e.g. Rakan"></div>
+      <div class="form-group"><label>Day</label>
+        <select id="mpin-day">
+          <option value="sun">Sunday</option><option value="mon">Monday</option>
+          <option value="tue">Tuesday</option><option value="wed">Wednesday</option>
+          <option value="thu">Thursday</option>
+        </select></div>
+      <div class="form-group"><label>Session</label>
+        <select id="mpin-session"><option>AM</option><option>PM</option></select></div>
+      <div class="form-group full"><label>Consultant</label><input id="mpin-cons"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-pin')">Cancel</button>
+      <button class="btn btn-primary" id="modal-pin-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-excl">
+  <div class="modal" style="width:360px">
+    <h3 id="modal-excl-title">Add exclusion</h3>
+    <div class="form-grid">
+      <div class="form-group full"><label>Person name</label><input id="mexcl-name"></div>
+      <div class="form-group"><label>Day</label>
+        <select id="mexcl-day">
+          <option value="sun">Sunday</option><option value="mon">Monday</option>
+          <option value="tue">Tuesday</option><option value="wed">Wednesday</option>
+          <option value="thu">Thursday</option>
+        </select></div>
+      <div class="form-group"><label>Session</label>
+        <select id="mexcl-session"><option>AM</option><option>PM</option><option value="ALL">All day</option></select></div>
+      <div class="form-group full"><label>Reason (optional)</label><input id="mexcl-reason"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-excl')">Cancel</button>
+      <button class="btn btn-primary" id="modal-excl-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════
+const state = {
+  people: [],
+  clinics: [],      // week clinics
+  pins: [],         // week purple pins
+  excls: [],        // week exclusions
+  selPersonId: null,
+  selClinicIdx: null,
+  selPinIdx: null,
+  selExclIdx: null,
+  selLeaveId: null,
+  selPinId: null,
+  selExclId: null,
+  personLeaves: [],
+  personPins: [],
+  personExcls: [],
+  lastResult: null,
+  lastPayload: null,
+  importProposals: [],
+  settings: {},
+};
+
+// ══════════════════════════════════════════════════════
+//  NAV
+// ══════════════════════════════════════════════════════
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.querySelector(`[data-page="${name}"]`).classList.add('active');
+  if (name === 'people') loadPeople();
+  if (name === 'rules') loadRules();
+}
+
+// ══════════════════════════════════════════════════════
+//  BADGES
+// ══════════════════════════════════════════════════════
+function kindBadge(k) {
+  return `<span class="badge badge-${k}">${k.toUpperCase()}</span>`;
+}
+function rotBadge(r) {
+  if (!r) return '';
+  const cls = r.toLowerCase().includes('gi') ? 'gi' :
+              r.toLowerCase().includes('breast') ? 'breast' :
+              r.toLowerCase().includes('sarc') ? 'sarcoma' : 'gyne';
+  return `<span class="badge badge-${cls}">${r}</span>`;
+}
+function sessBadge(s) {
+  return `<span class="badge badge-${s.toLowerCase()}">${s}</span>`;
+}
+
+// ══════════════════════════════════════════════════════
+//  PEOPLE
+// ══════════════════════════════════════════════════════
+async function loadPeople() {
+  const res = await fetch('/api/people');
+  state.people = await res.json();
+  renderPeople();
+}
+
+function renderPeople() {
+  const el = document.getElementById('people-list');
+  if (!state.people.length) { el.innerHTML = '<div class="detail-list-empty">No people yet</div>'; return; }
+  el.innerHTML = state.people.map((p, i) => `
+    <div class="tbl-row people-grid ${state.selPersonId === p.id ? 'selected' : ''}"
+         onclick="selectPerson(${p.id})">
+      <span style="font-weight:700;${!p.active ? 'color:#9aa7b5' : ''}">${p.name}</span>
+      <span>${kindBadge(p.kind)}</span>
+      <span>${rotBadge(p.rotation)}</span>
+      <span style="color:var(--muted)">${p.min_clinics}–${p.max_clinics}</span>
+      <span class="${p.active ? 'status-active' : 'status-inactive'}">
+        ${p.active ? '● active' : '○ inactive'}</span>
+    </div>`).join('');
+}
+
+async function selectPerson(id) {
+  state.selPersonId = id;
+  state.selLeaveId = null;
+  state.selPinId = null;
+  state.selExclId = null;
+  renderPeople();
+  const p = state.people.find(x => x.id === id);
+  document.getElementById('detail-name').textContent = p ? p.name : '—';
+  const [lv, pins, excls] = await Promise.all([
+    fetch(`/api/people/${id}/leaves`).then(r => r.json()),
+    fetch(`/api/people/${id}/pins`).then(r => r.json()),
+    fetch(`/api/people/${id}/exclusions`).then(r => r.json()),
+  ]);
+  state.personLeaves = lv;
+  state.personPins = pins;
+  state.personExcls = excls;
+  renderDetailLists();
+}
+
+function renderDetailLists() {
+  const leaveEl = document.getElementById('d-leaves');
+  leaveEl.innerHTML = state.personLeaves.length
+    ? state.personLeaves.map(l => `
+        <div class="detail-list-item ${state.selLeaveId === l.id ? 'selected' : ''}"
+             onclick="state.selLeaveId=${l.id};renderDetailLists()">
+          <span>${l.start_date} → ${l.end_date} ${l.note ? '· ' + l.note : ''}</span>
+        </div>`).join('')
+    : '<div class="detail-list-empty">None</div>';
+
+  const pinEl = document.getElementById('d-pins');
+  pinEl.innerHTML = state.personPins.length
+    ? state.personPins.map(p => `
+        <div class="detail-list-item ${state.selPinId === p.id ? 'selected' : ''}"
+             onclick="state.selPinId=${p.id};renderDetailLists()">
+          <span>${p.consultant} &nbsp;${p.day.toUpperCase()} ${p.session}</span>
+        </div>`).join('')
+    : '<div class="detail-list-empty">None</div>';
+
+  const exclEl = document.getElementById('d-excls');
+  exclEl.innerHTML = state.personExcls.length
+    ? state.personExcls.map(e => `
+        <div class="detail-list-item ${state.selExclId === e.id ? 'selected' : ''}"
+             onclick="state.selExclId=${e.id};renderDetailLists()">
+          <span>${e.day.toUpperCase()} ${e.session}</span>
+        </div>`).join('')
+    : '<div class="detail-list-empty">None</div>';
+}
+
+let _editingPersonId = null;
+function openAddPersonModal(pid) {
+  _editingPersonId = pid || null;
+  document.getElementById('modal-person-title').textContent = pid ? 'Edit person' : 'Add person';
+  if (pid) {
+    const p = state.people.find(x => x.id === pid);
+    if (p) {
+      document.getElementById('mp-name').value = p.name;
+      document.getElementById('mp-kind').value = p.kind;
+      document.getElementById('mp-rotation').value = p.rotation || '';
+      document.getElementById('mp-min').value = p.min_clinics;
+      document.getElementById('mp-max').value = p.max_clinics;
+      document.getElementById('mp-start').value = p.start_date || '';
+      document.getElementById('mp-end').value = p.end_date || '';
+      document.getElementById('mp-notes').value = p.notes || '';
+    }
+  } else {
+    ['mp-name','mp-notes'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('mp-kind').value = 'fellow';
+    document.getElementById('mp-rotation').value = '';
+    document.getElementById('mp-min').value = 5;
+    document.getElementById('mp-max').value = 7;
+    document.getElementById('mp-start').value = '';
+    document.getElementById('mp-end').value = '';
+  }
+  openModal('modal-person');
+}
+
+async function savePerson() {
+  const data = {
+    name: document.getElementById('mp-name').value.trim(),
+    kind: document.getElementById('mp-kind').value,
+    rotation: document.getElementById('mp-rotation').value,
+    min_clinics: parseInt(document.getElementById('mp-min').value) || 0,
+    max_clinics: parseInt(document.getElementById('mp-max').value) || 5,
+    start_date: document.getElementById('mp-start').value || null,
+    end_date: document.getElementById('mp-end').value || null,
+    notes: document.getElementById('mp-notes').value.trim(),
+  };
+  if (!data.name) { alert('Name required'); return; }
+  if (_editingPersonId) {
+    await fetch(`/api/people/${_editingPersonId}`, { method: 'PUT',
+      headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  } else {
+    await fetch('/api/people', { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  }
+  closeModal('modal-person');
+  loadPeople();
+}
+
+function editSelectedPerson() {
+  if (!state.selPersonId) return;
+  openAddPersonModal(state.selPersonId);
+}
+
+async function toggleActivePerson() {
+  if (!state.selPersonId) return;
+  const p = state.people.find(x => x.id === state.selPersonId);
+  await fetch(`/api/people/${state.selPersonId}`, { method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ active: p.active ? 0 : 1 }) });
+  loadPeople();
+}
+
+async function deleteSelectedPerson() {
+  if (!state.selPersonId) return;
+  if (!confirm('Delete this person and all their leaves/pins/exclusions?')) return;
+  await fetch(`/api/people/${state.selPersonId}`, { method: 'DELETE' });
+  state.selPersonId = null;
+  loadPeople();
+}
+
+async function addLeave() {
+  if (!state.selPersonId) { alert('Select a person first'); return; }
+  const s = prompt('Start date (YYYY-MM-DD):'); if (!s) return;
+  const e = prompt('End date (YYYY-MM-DD):'); if (!e) return;
+  await fetch(`/api/people/${state.selPersonId}/leaves`, { method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ start_date: s, end_date: e, note: '' }) });
+  selectPerson(state.selPersonId);
+}
+async function removeLeave() {
+  if (!state.selLeaveId) return;
+  await fetch(`/api/leaves/${state.selLeaveId}`, { method: 'DELETE' });
+  state.selLeaveId = null;
+  selectPerson(state.selPersonId);
+}
+async function addPin() {
+  if (!state.selPersonId) { alert('Select a person first'); return; }
+  const day = prompt('Day (sun/mon/tue/wed/thu):'); if (!day) return;
+  const sess = prompt('Session (AM/PM):'); if (!sess) return;
+  const cons = prompt('Consultant:'); if (!cons) return;
+  await fetch(`/api/people/${state.selPersonId}/pins`, { method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ day: day.toLowerCase().slice(0,3), session: sess.toUpperCase(), consultant: cons }) });
+  selectPerson(state.selPersonId);
+}
+async function removePin() {
+  if (!state.selPinId) return;
+  await fetch(`/api/pins/${state.selPinId}`, { method: 'DELETE' });
+  state.selPinId = null;
+  selectPerson(state.selPersonId);
+}
+async function addExcl() {
+  if (!state.selPersonId) { alert('Select a person first'); return; }
+  const day = prompt('Day (sun/mon/tue/wed/thu):'); if (!day) return;
+  const sess = prompt('Session (AM/PM/ALL):'); if (!sess) return;
+  await fetch(`/api/people/${state.selPersonId}/exclusions`, { method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ day: day.toLowerCase().slice(0,3), session: sess.toUpperCase() }) });
+  selectPerson(state.selPersonId);
+}
+async function removeExcl() {
+  if (!state.selExclId) return;
+  await fetch(`/api/exclusions/${state.selExclId}`, { method: 'DELETE' });
+  state.selExclId = null;
+  selectPerson(state.selPersonId);
+}
+
+// ══════════════════════════════════════════════════════
+//  SCHEDULE PAGE — CLINICS
+// ══════════════════════════════════════════════════════
+const DAY_ORDER = {sun:0,mon:1,tue:2,wed:3,thu:4};
+
+function onWeekChange() {
+  // reset pins/excls when week changes
+  state.pins = [];
+  state.excls = [];
+  renderPins(); renderExcls();
+}
+
+function sortedClinics() {
+  return [...state.clinics].sort((a,b) => {
+    const dd = DAY_ORDER[a.day] - DAY_ORDER[b.day];
+    if (dd !== 0) return dd;
+    return a.session === 'AM' ? -1 : 1;
+  });
+}
+
+function weekDates() {
+  const ws = document.getElementById('week-start').value;
+  if (!ws) return {};
+  const d = new Date(ws + 'T00:00:00');
+  const days = ['sun','mon','tue','wed','thu'];
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const map = {};
+  for (let i = 0; i < 5; i++) {
+    const nd = new Date(d); nd.setDate(d.getDate() + i);
+    map[days[i]] = `${String(nd.getDate()).padStart(2,'0')} ${months[nd.getMonth()]}`;
+  }
+  return map;
+}
+
+function renderClinics() {
+  const el = document.getElementById('clinic-list');
+  const sorted = sortedClinics();
+  const dates = weekDates();
+  if (!sorted.length) {
+    el.innerHTML = '<div style="padding:20px;color:var(--muted);text-align:center">No clinics yet. Add a clinic or load a template.</div>';
+    return;
+  }
+  let html = '';
+  let lastDay = null;
+  sorted.forEach((c, i) => {
+    const origIdx = state.clinics.indexOf(c);
+    if (c.day !== lastDay) {
+      const label = c.day.charAt(0).toUpperCase()+c.day.slice(1) + (dates[c.day] ? ' · ' + dates[c.day] : '');
+      html += `<div class="day-header">${label}</div>`;
+      lastDay = c.day;
+    }
+    const addon = c.clinic_type === 'AddOn' ? '<span class="badge badge-addon">ADD-ON</span>' : '';
+    html += `
+      <div class="tbl-row clinic-grid ${state.selClinicIdx === origIdx ? 'selected' : ''}"
+           onclick="selectClinic(${origIdx})">
+        <span>${sessBadge(c.session)}</span>
+        <span style="font-weight:700">${c.consultant}</span>
+        <span>${rotBadge(c.specialty)}</span>
+        <span>${addon}</span>
+        <span>
+          <input class="pts-input" type="number" value="${c.patients}"
+            onclick="event.stopPropagation()"
+            onchange="updatePts(${origIdx}, this.value)" min="0">
+          <span style="font-size:11px;color:var(--muted)">pts</span>
+        </span>
+        <span style="font-size:11px;color:var(--muted)">${c.day.toUpperCase()}</span>
+      </div>`;
+  });
+  el.innerHTML = html;
+}
+
+function selectClinic(idx) {
+  state.selClinicIdx = (state.selClinicIdx === idx) ? null : idx;
+  renderClinics();
+}
+function updatePts(idx, val) {
+  state.clinics[idx].patients = parseInt(val) || 0;
+}
+function toggleAddOn() {
+  if (state.selClinicIdx === null) { alert('Select a clinic first'); return; }
+  const c = state.clinics[state.selClinicIdx];
+  c.clinic_type = c.clinic_type === 'AddOn' ? '' : 'AddOn';
+  renderClinics();
+}
+function deleteClinic() {
+  if (state.selClinicIdx === null) { alert('Select a clinic first'); return; }
+  state.clinics.splice(state.selClinicIdx, 1);
+  state.selClinicIdx = null;
+  renderClinics();
+}
+function openAddClinicModal() { openModal('modal-clinic'); }
+function saveClinic() {
+  state.clinics.push({
+    day: document.getElementById('mc-day').value,
+    session: document.getElementById('mc-session').value,
+    consultant: document.getElementById('mc-cons').value.trim(),
+    specialty: document.getElementById('mc-spec').value,
+    patients: parseInt(document.getElementById('mc-pts').value) || 0,
+    clinic_type: document.getElementById('mc-type').value,
+  });
+  closeModal('modal-clinic');
+  renderClinics();
+}
+
+async function loadTemplate() {
+  const res = await fetch('/api/template');
+  const tmpl = await res.json();
+  if (!tmpl.length) { alert('No template saved yet. Build a week and use Save as template.'); return; }
+  state.clinics = tmpl.map(t => ({...t, patients: t.patients || 0}));
+  state.selClinicIdx = null;
+  renderClinics();
+}
+
+async function saveAsTemplate() {
+  if (!state.clinics.length) { alert('No clinics to save'); return; }
+  await fetch('/api/template', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(state.clinics) });
+  alert('Template saved.');
+}
+
+// ── week pins & exclusions ──
+function renderPins() {
+  const el = document.getElementById('week-pins-list');
+  el.innerHTML = state.pins.length
+    ? state.pins.map((p,i) => `
+        <div class="detail-list-item ${state.selPinIdx === i ? 'selected' : ''}"
+             onclick="state.selPinIdx=${i};renderPins()">
+          ${p.person} → ${p.consultant} ${p.day.toUpperCase()} ${p.session}
+        </div>`).join('')
+    : '<div class="detail-list-empty">None</div>';
+}
+function renderExcls() {
+  const el = document.getElementById('week-excl-list');
+  el.innerHTML = state.excls.length
+    ? state.excls.map((e,i) => `
+        <div class="detail-list-item ${state.selExclIdx === i ? 'selected' : ''}"
+             onclick="state.selExclIdx=${i};renderExcls()">
+          ${e.person} ${e.day.toUpperCase()} ${e.session} ${e.reason ? '· '+e.reason : ''}
+        </div>`).join('')
+    : '<div class="detail-list-empty">None</div>';
+}
+
+function openAddPinModal() {
+  document.getElementById('modal-pin-title').textContent = 'Add purple pin';
+  document.getElementById('mpin-name').value = '';
+  document.getElementById('mpin-cons').value = '';
+  document.getElementById('modal-pin-save').onclick = saveWeekPin;
+  openModal('modal-pin');
+}
+function saveWeekPin() {
+  const person = document.getElementById('mpin-name').value.trim();
+  if (!person) return;
+  state.pins.push({
+    person, day: document.getElementById('mpin-day').value,
+    session: document.getElementById('mpin-session').value,
+    consultant: document.getElementById('mpin-cons').value.trim(),
+  });
+  closeModal('modal-pin'); renderPins();
+}
+function deleteWeekPin() {
+  if (state.selPinIdx === null) return;
+  state.pins.splice(state.selPinIdx, 1);
+  state.selPinIdx = null; renderPins();
+}
+
+function openAddExclModal() {
+  document.getElementById('modal-excl-title').textContent = 'Add exclusion';
+  document.getElementById('mexcl-name').value = '';
+  document.getElementById('mexcl-reason').value = '';
+  document.getElementById('modal-excl-save').onclick = saveWeekExcl;
+  openModal('modal-excl');
+}
+function saveWeekExcl() {
+  const person = document.getElementById('mexcl-name').value.trim();
+  if (!person) return;
+  state.excls.push({
+    person, day: document.getElementById('mexcl-day').value,
+    session: document.getElementById('mexcl-session').value,
+    reason: document.getElementById('mexcl-reason').value.trim(),
+  });
+  closeModal('modal-excl'); renderExcls();
+}
+function deleteWeekExcl() {
+  if (state.selExclIdx === null) return;
+  state.excls.splice(state.selExclIdx, 1);
+  state.selExclIdx = null; renderExcls();
+}
+
+// ══════════════════════════════════════════════════════
+//  GENERATE
+// ══════════════════════════════════════════════════════
+function buildPayload() {
+  // Fetch active people from DB-backed state for fellows/residents
+  const fellows = state.people
+    .filter(p => p.kind === 'fellow' || p.kind === 'np')
+    .map(p => ({
+      name: p.name, rotation: p.rotation || '', role: p.kind === 'np' ? 'NP' : 'Fellow',
+      min_clinics: p.min_clinics, max_clinics: p.max_clinics, status: p.active ? 'Active' : 'Leave',
+    }));
+  const residents = state.people
+    .filter(p => p.kind === 'resident' || p.kind === 'assistant')
+    .map(p => ({
+      name: p.name, type: p.kind === 'assistant' ? 'Assistant' : 'Resident',
+      min_clinics: p.min_clinics, max_clinics: p.max_clinics, status: p.active ? 'Active' : 'Leave',
+    }));
+  const ws = document.getElementById('week-start').value;
+  return {
+    week_start: ws,
+    week_end: ws ? (() => { const d=new Date(ws+'T00:00:00'); d.setDate(d.getDate()+4); return d.toISOString().slice(0,10); })() : '',
+    fellows, residents,
+    clinics: state.clinics,
+    pins: state.pins.map(p => ({ person: p.person, day: p.day, session: p.session, consultant: p.consultant })),
+    availability: state.excls.map(e => ({ person: e.person, day: e.day, session: e.session, reason: e.reason })),
+  };
+}
+
+function logLine(text, cls='') {
+  const el = document.getElementById('gen-log');
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setBanner(kind, text) {
+  const b = document.getElementById('gen-banner');
+  b.className = 'banner ' + kind;
+  b.textContent = text;
+  b.style.display = 'block';
+}
+
+async function generate() {
+  if (!state.clinics.length) { alert('Add some clinics first'); return; }
+  if (!state.people.length) await loadPeople();
+
+  const btn = document.getElementById('gen-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Solving…';
+  document.getElementById('gen-log').innerHTML = '';
+  document.getElementById('gen-banner').style.display = 'none';
+  document.getElementById('dl-xlsx').style.display = 'none';
+  document.getElementById('dl-docx').style.display = 'none';
+  state.lastResult = null;
+
+  const payload = buildPayload();
+  state.lastPayload = payload;
+  logLine(`Week ${payload.week_start} → ${payload.week_end}`);
+  logLine(`Fellows/NPs: ${payload.fellows.length}  Residents/Assistants: ${payload.residents.length}  Clinics: ${payload.clinics.length}`);
+  const onLeave = payload.fellows.filter(f => f.status === 'Leave').map(f => f.name);
+  if (onLeave.length) logLine(`Auto-leave: ${onLeave.join(', ')}`);
+  logLine('Solving…');
+
+  try {
+    const res = await fetch('/api/solve', { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await res.json();
+
+    if (data.error) {
+      logLine('ERROR: ' + data.message, 'log-err');
+      setBanner('err', '✗ Error — see log');
+    } else {
+      state.lastResult = data;
+      logLine(`Status: ${data.status}`, data.status === 'OPTIMAL' ? 'log-ok' : 'log-warn');
+      if (data.purple_orphans_leave?.length) {
+        data.purple_orphans_leave.forEach(p =>
+          logLine(`  Stale pin auto-skipped (on leave): ${p.person} ${p.day?.toUpperCase()} ${p.session}`));
+      }
+      const warns = (data.schedule || []).filter(r => r.Warnings);
+      logLine(`Warnings: ${warns.length}`, warns.length ? 'log-warn' : 'log-ok');
+      warns.forEach(r => logLine(`  ${r.Day} ${r.Session} ${r.Consultant}: ${r.Warnings}`, 'log-warn'));
+      logLine('\nSchedule ready. Download below.', 'log-ok');
+
+      if (['OPTIMAL','FEASIBLE'].includes(data.status) && !warns.length) {
+        setBanner('ok', '✓ ' + data.status + ' — schedule ready, no warnings');
+      } else if (['OPTIMAL','FEASIBLE'].includes(data.status)) {
+        setBanner('warn', '⚠ ' + data.status + ' with ' + warns.length + ' warning(s)');
+      } else {
+        setBanner('err', '✗ ' + data.status + ' — no schedule produced');
+      }
+      document.getElementById('dl-xlsx').style.display = 'inline-flex';
+      document.getElementById('dl-docx').style.display = 'inline-flex';
+    }
+  } catch(e) {
+    logLine('Network error: ' + e.message, 'log-err');
+    setBanner('err', '✗ Network error');
+  }
+  btn.disabled = false;
+  btn.innerHTML = '▶ &nbsp;Generate schedule';
+}
+
+async function downloadXlsx() {
+  if (!state.lastResult) return;
+  const payload = { ...state.lastPayload, result: state.lastResult };
+  const res = await fetch('/api/export/xlsx', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Schedule_${state.lastPayload.week_start}.xlsx`;
+  a.click();
+}
+async function downloadDocx() {
+  if (!state.lastResult) return;
+  const payload = { ...state.lastPayload, result: state.lastResult };
+  const res = await fetch('/api/export/docx', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Schedule_${state.lastPayload.week_start}.docx`;
+  a.click();
+}
+
+// ══════════════════════════════════════════════════════
+//  IMPORT
+// ══════════════════════════════════════════════════════
+async function loadRota() {
+  const f = document.getElementById('rota-file').files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  fd.append('year', new Date().getFullYear());
+  const res = await fetch('/api/import/rota', { method:'POST', body: fd });
+  const props = await res.json();
+  if (props.error) { alert('Parse error: ' + props.message); return; }
+  state.importProposals = props;
+  renderImport();
+}
+
+function renderImport() {
+  const el = document.getElementById('import-list');
+  const props = state.importProposals;
+  document.getElementById('import-count').textContent = `${props.length} proposals`;
+  el.innerHTML = props.map((p,i) => {
+    const isReview = p.action === 'review';
+    const isExists = (p.status||'').startsWith('EXISTS');
+    const defaultTick = !isReview && !isExists;
+    return `
+      <div class="tbl-row import-tbl-row ${isReview ? 'import-review' : ''}
+                  ${isExists ? 'import-exists' : ''}"
+           onclick="toggleImportRow(${i})">
+        <span id="itick-${i}">${defaultTick ? '☑' : '☐'}</span>
+        <span>${p.action}</span>
+        <span style="font-weight:600">${p.name||''}</span>
+        <span style="font-size:11px">${p.status||''}</span>
+        <span style="font-size:11px;color:var(--muted)">${p.detail||''}</span>
+      </div>`;
+  }).join('');
+}
+
+function toggleImportRow(i) {
+  const el = document.getElementById(`itick-${i}`);
+  el.textContent = el.textContent === '☑' ? '☐' : '☑';
+}
+function selectAll(val) {
+  state.importProposals.forEach((_,i) => {
+    const el = document.getElementById(`itick-${i}`);
+    if (el) el.textContent = val ? '☑' : '☐';
+  });
+}
+
+async function applySelected() {
+  const selected = state.importProposals.filter((p,i) => {
+    const el = document.getElementById(`itick-${i}`);
+    return el && el.textContent === '☑' && p.action !== 'review';
+  });
+  const res = await fetch('/api/import/rota/apply', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(selected) });
+  const results = await res.json();
+  const log = document.getElementById('import-log');
+  log.textContent = results.map(r => (r.ok ? '✓ ' : '✗ ') + r.msg).join('\n');
+  log.textContent += `\n\nDone — ${results.filter(r=>r.ok).length} changes applied.`;
+}
+
+// ══════════════════════════════════════════════════════
+//  RULES
+// ══════════════════════════════════════════════════════
+const RULE_GROUPS = [
+  { title: 'Coverage (hard priorities)', keys: ['w_chemo_shortfall','w_addon_uncovered','w_fellow_short','w_capacity_short'] },
+  { title: 'Distribution & fairness', keys: ['w_under_min_res','w_rotation_fairness','w_under_min_fellow','w_over_assign','w_rotation_match','w_fairness','w_band_pref','w_assist_for_chemo'] },
+  { title: 'Chemoassessment', keys: ['chemo_active','chemo_slots'] },
+  { title: 'Solver', keys: ['solver_timeout_s'] },
+];
+
+async function loadRules() {
+  const res = await fetch('/api/settings');
+  state.settings = await res.json();
+  const el = document.getElementById('rules-form');
+  el.innerHTML = RULE_GROUPS.map(g => `
+    <div class="rules-group">
+      <h4>${g.title}</h4>
+      ${g.keys.filter(k => k in state.settings).map(k => `
+        <div class="rules-row">
+          <label>${k}</label>
+          <input id="rule-${k}" value="${state.settings[k]}"
+                 style="width:${k==='chemo_slots'?'280px':'100px'}">
+        </div>`).join('')}
+    </div>`).join('');
+}
+
+async function saveRules() {
+  const data = {};
+  document.querySelectorAll('[id^="rule-"]').forEach(el => {
+    data[el.id.replace('rule-','')] = el.value;
+  });
+  await fetch('/api/settings', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  alert('Settings saved.');
+}
+
+// ══════════════════════════════════════════════════════
+//  MODALS
+// ══════════════════════════════════════════════════════
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(m => {
+  m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); });
+});
+
+// ══════════════════════════════════════════════════════
+//  BOOT
+// ══════════════════════════════════════════════════════
+(async () => {
+  // default week to nearest upcoming Sunday
+  const today = new Date();
+  const day = today.getDay(); // 0=Sun
+  const diff = day === 0 ? 0 : 7 - day;
+  const sun = new Date(today); sun.setDate(today.getDate() + diff);
+  document.getElementById('week-start').value = sun.toISOString().slice(0,10);
+  await loadPeople();
+})();
+</script>
+</body>
+</html>
