@@ -93,14 +93,16 @@ def _assemble_from_payload(payload):
     if not fellows_df.empty:
         fellows_df = fellows_df.rename(columns={
             "name": "Fellow", "role": "Role", "rotation": "Rotation",
-            "min_clinics": "Min Clinics", "max_clinics": "Max Clinics"
+            "min_clinics": "Min Clinics", "max_clinics": "Max Clinics",
+            "status": "Status"
         })
 
     residents_df = pd.DataFrame(payload.get("residents", []))
     if not residents_df.empty:
         residents_df = residents_df.rename(columns={
             "name": "Resident", "type": "Type",
-            "min_clinics": "Min Clinics", "max_clinics": "Max Clinics"
+            "min_clinics": "Min Clinics", "max_clinics": "Max Clinics",
+            "status": "Status"
         })
 
     clinics_df = pd.DataFrame(payload.get("clinics", []))
@@ -178,17 +180,134 @@ def api_save_settings():
     return jsonify({"ok": True})
 
 
+def _merge_db_roster(payload, db):
+    """
+    Build the full solver payload from the database roster + the per-week data
+    the frontend sent (clinics, week dates, one-off pins/exclusions).
+
+    This is the web equivalent of the desktop app's Database.assemble_week:
+    it resolves date-range leaves, rotation windows, recurring LTC pins, and
+    recurring exclusions from the DB so the Schedule page never has to carry
+    permanent roster state. Active/inactive comes straight from the DB row.
+    """
+    from datetime import datetime, timedelta
+    DAYS_ = ["sun", "mon", "tue", "wed", "thu"]
+
+    week_start = payload.get("week_start", "")
+    try:
+        wstart = datetime.strptime(week_start, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        # No valid week → fall back to whatever the frontend sent verbatim
+        return payload
+    day_dates = {DAYS_[i]: wstart + timedelta(days=i) for i in range(5)}
+    wk_end = day_dates["thu"]
+
+    def parse_d(s):
+        if not s:
+            return None
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+
+    def in_window(p):
+        sd, ed = parse_d(p["start_date"]), parse_d(p["end_date"])
+        if sd and sd > wk_end:
+            return False
+        if ed and ed < wstart:
+            return False
+        return True
+
+    people = [p for p in db.list_people(include_inactive=True)]
+    by_id = {p["id"]: p for p in people}
+
+    # Date-range leave resolution: full week → Leave status; partial → exclusions.
+    full_week_leave = set()
+    partial_excl = []
+    for lv in db.list_leaves():
+        p = by_id.get(lv["person_id"])
+        if not p:
+            continue
+        lsd, led = parse_d(lv["start_date"]), parse_d(lv["end_date"])
+        if not lsd or not led:
+            continue
+        covered = [d for d in DAYS_ if lsd <= day_dates[d] <= led]
+        if not covered:
+            continue
+        if len(covered) == 5:
+            full_week_leave.add(p["name"])
+        else:
+            for d in covered:
+                partial_excl.append({"person": p["name"], "day": d,
+                                     "session": "All", "reason": lv["note"] or "leave"})
+
+    fellows, residents = [], []
+    for p in people:
+        # Inactive in DB OR outside rotation window OR full-week leave → status Leave
+        is_off = (not p["active"]) or (not in_window(p)) or (p["name"] in full_week_leave)
+        status = "Leave" if is_off else "Active"
+        if p["kind"] in ("fellow", "np"):
+            fellows.append({
+                "name": p["name"], "rotation": p["rotation"] or "",
+                "role": "NP" if p["kind"] == "np" else "Fellow",
+                "min_clinics": p["min_clinics"], "max_clinics": p["max_clinics"],
+                "status": status,
+            })
+        elif p["kind"] in ("resident", "assistant"):
+            residents.append({
+                "name": p["name"],
+                "type": "Assistant" if p["kind"] == "assistant" else "Resident",
+                "min_clinics": p["min_clinics"], "max_clinics": p["max_clinics"],
+                "status": status,
+            })
+
+    # Recurring LTC pins from DB (skip people who are off this week — the solver
+    # would skip them anyway, but filtering here keeps demand accounting clean).
+    db_pins = []
+    off_names = {f["name"] for f in fellows if f["status"] == "Leave"} | \
+                {r["name"] for r in residents if r["status"] == "Leave"}
+    for rp in db.list_recurring_pins():
+        p = by_id.get(rp["person_id"])
+        if not p or p["name"] in off_names:
+            continue
+        db_pins.append({"person": p["name"], "day": rp["day"],
+                        "session": rp["session"], "consultant": rp["consultant"]})
+
+    # Recurring exclusions from DB
+    db_excl = []
+    for re_ in db.list_recurring_exclusions():
+        p = by_id.get(re_["person_id"])
+        if not p:
+            continue
+        db_excl.append({"person": p["name"], "day": re_["day"],
+                        "session": re_["session"], "reason": "recurring"})
+
+    # Combine: DB pins + frontend one-off pins; DB exclusions + partial leaves
+    # + frontend one-off exclusions.
+    all_pins = db_pins + payload.get("pins", [])
+    all_excl = db_excl + partial_excl + payload.get("availability", [])
+
+    return {
+        **payload,
+        "fellows": fellows,
+        "residents": residents,
+        "pins": all_pins,
+        "availability": all_excl,
+    }
+
+
 @app.route("/api/solve", methods=["POST"])
 def api_solve():
     try:
         payload = request.get_json()
+        db = get_db()
+        # Merge permanent roster data from the DB so the Schedule page doesn't
+        # have to carry it. The frontend sends clinics + week + any one-off
+        # pins/exclusions; the server adds people, recurring LTC pins,
+        # recurring exclusions, and date-range leaves.
+        payload = _merge_db_roster(payload, db)
         fellows_df, residents_df, clinics_df, pins_df, availability_df, date_map = \
             _assemble_from_payload(payload)
-        db = get_db()
         cfg = _build_cfg(db)
         result = solve(clinics_df, fellows_df, residents_df, pins_df,
                        config=cfg, availability_path=availability_df)
-        # Slim down result for JSON (drop DataFrames)
         return jsonify({
             "status": result["status"],
             "schedule": result.get("schedule", []),
@@ -208,8 +327,16 @@ def api_export_xlsx():
     try:
         payload = request.get_json()
         result_data = payload.get("result")
+        db = get_db()
+        payload = _merge_db_roster(payload, db)
         fellows_df, residents_df, clinics_df, pins_df, availability_df, date_map = \
             _assemble_from_payload(payload)
+        # Drop Leave-status people from the workload summary (inactive / on-leave /
+        # out-of-window). They contribute nothing and shouldn't clutter the export.
+        if not fellows_df.empty and "Status" in fellows_df.columns:
+            fellows_df = fellows_df[fellows_df["Status"] != "Leave"].reset_index(drop=True)
+        if not residents_df.empty and "Status" in residents_df.columns:
+            residents_df = residents_df[residents_df["Status"] != "Leave"].reset_index(drop=True)
         week_start = payload.get("week_start", "")
         week_end = payload.get("week_end", "")
 
@@ -257,18 +384,28 @@ def api_export_docx():
 @app.route("/api/import/patients", methods=["POST"])
 def api_import_patients():
     try:
-        from importer_rota import parse_patient_numbers
+        from importer_rota import parse_patient_numbers, list_patient_sheets
         f = request.files.get("file")
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
         tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
         f.save(tmp.name)
         tmp.close()
-        clinics = parse_patient_numbers(tmp.name)
+        sheet = request.form.get("sheet") or None
+        sheets = list_patient_sheets(tmp.name)
+        # If the workbook has multiple sheets and none chosen yet, return the
+        # list so the frontend can ask which week.
+        if len(sheets) > 1 and not sheet:
+            os.unlink(tmp.name)
+            return jsonify({"need_sheet": True, "sheets": sheets})
+        clinics = parse_patient_numbers(tmp.name, sheet=sheet)
         os.unlink(tmp.name)
-        return jsonify(clinics)
+        return jsonify({"clinics": clinics})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/import/rota", methods=["POST"])
 def api_import_rota():
     try:
         from importer_rota import parse_rota, diff_against_db, apply_proposal

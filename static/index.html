@@ -463,6 +463,16 @@ under_min_res = rotation_fairness  &gt;  under_min_fellow  &gt;  over_assign  &g
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-sheet">
+  <div class="modal" style="width:420px">
+    <h3>Pick the week to import</h3>
+    <div id="sheet-picker-body"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-sheet')">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const state = {
   people: [], clinics: [], pins: [], excls: [],
@@ -742,22 +752,56 @@ function saveClinic() {
   renderClinics();
 }
 async function importPatients() {
-  const f = document.getElementById('patients-file').files[0];
+  const fileInput = document.getElementById('patients-file');
+  const f = fileInput.files[0];
+  if (!f) return;
+  // keep the file around for a possible second call with a chosen sheet
+  state._patientsFile = f;
+  await sendPatientsImport(null);
+  fileInput.value = '';
+}
+
+async function sendPatientsImport(sheet) {
+  const f = state._patientsFile;
   if (!f) return;
   const fd = new FormData();
   fd.append('file', f);
+  if (sheet) fd.append('sheet', sheet);
   const res = await fetch('/api/import/patients', { method: 'POST', body: fd });
   const data = await res.json();
   if (data.error) { alert('Error: ' + data.error); return; }
-  if (!data.length) { alert('No clinics found in that file.'); return; }
+
+  // Multi-sheet workbook → ask which week
+  if (data.need_sheet) {
+    showSheetPicker(data.sheets);
+    return;
+  }
+  const clinics = data.clinics || [];
+  if (!clinics.length) { alert('No clinics found in that sheet.'); return; }
   if (state.clinics.length &&
       !confirm('Replace the current ' + state.clinics.length + ' clinics with ' +
-               data.length + ' imported clinics?')) return;
-  state.clinics = data;
+               clinics.length + ' imported clinics?')) return;
+  state.clinics = clinics;
   state.selClinicIdx = null;
   renderClinics();
-  document.getElementById('patients-file').value = '';
 }
+
+function showSheetPicker(sheets) {
+  const body = document.getElementById('sheet-picker-body');
+  body.innerHTML = '<p style="font-size:13px;color:var(--muted);margin-bottom:12px">' +
+    'This file has multiple weeks. Pick the one to import:</p>' +
+    sheets.map(s =>
+      '<button class="btn btn-ghost" style="display:block;width:100%;margin-bottom:8px;text-align:left"' +
+      ' onclick="pickSheet(' + JSON.stringify(s).replace(/"/g,'&quot;') + ')">' +
+      s + '</button>').join('');
+  openModal('modal-sheet');
+}
+
+function pickSheet(sheet) {
+  closeModal('modal-sheet');
+  sendPatientsImport(sheet);
+}
+
 async function loadTemplate() {
   const res = await fetch('/api/template');
   const tmpl = await res.json();
