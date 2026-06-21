@@ -300,18 +300,33 @@ def parse_rota(path, default_year=None):
     return proposals
 
 
-def parse_patient_numbers(path):
+def list_patient_sheets(path):
+    """Return the sheet names in the patient-bookings workbook."""
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    return wb.sheetnames
+
+
+def parse_patient_numbers(path, sheet=None):
     """
     Parse the secretary's patient-bookings file:
       Day | Session | Consultant | Specialty | # Of Patients
     Returns list of clinic dicts ready for week_clinics.
+
+    sheet: name of the worksheet to read. If None, reads the first sheet.
+    Non-numeric patient values (e.g. 'Hajj-Closed', blank) become 0 but the
+    clinic is still imported.
     """
     wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb[wb.sheetnames[0]]
+    if sheet and sheet in wb.sheetnames:
+        ws = wb[sheet]
+    else:
+        ws = wb[wb.sheetnames[0]]
     out = []
     for row in ws.iter_rows(values_only=True):
+        if not row or len(row) < 5:
+            continue
         day = _norm(row[0]).lower()
-        if day in ("", "day") or len(row) < 5:
+        if day in ("", "day"):
             continue
         d = DAY_TOKENS.get(day, DAY_TOKENS.get(day[:3]))
         if not d:
@@ -321,8 +336,10 @@ def parse_patient_numbers(path):
             continue
         cons = _norm(row[2]).capitalize()
         spec = _norm(row[3])
+        # Patient count: numeric → int; anything else (Hajj-Closed, blank, AL-...) → 0
+        raw = row[4]
         try:
-            pts = int(row[4])
+            pts = int(float(raw))
         except (TypeError, ValueError):
             pts = 0
         out.append({"day": d, "session": sess, "consultant": cons,
