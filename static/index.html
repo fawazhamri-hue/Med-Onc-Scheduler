@@ -1059,6 +1059,8 @@ async function generate() {
       setBanner('err', '✗ Error — see log');
     } else {
       state.lastResult = data;
+      state.editableSchedule = null;  // fresh solve -> renderResultGrid rebuilds it
+      state.editWarnings = [];
       logLine('Status: ' + data.status, data.status === 'OPTIMAL' ? 'log-ok' : 'log-warn');
       (data.purple_orphans_leave || []).forEach(p =>
         logLine('  Stale pin auto-skipped (on leave): ' + p.person + ' ' +
@@ -1104,7 +1106,12 @@ async function downloadXlsx() { await downloadFile('/api/export/xlsx', '.xlsx');
 async function downloadDocx() { await downloadFile('/api/export/docx', '.docx'); }
 async function downloadFile(url, ext) {
   if (!state.lastResult) return;
-  const payload = Object.assign({}, state.lastPayload, { result: state.lastResult });
+  // Export the edited schedule if the chief made any in-app changes,
+  // otherwise the original solver output — same shape either way.
+  const resultToExport = state.editableSchedule
+    ? { ...state.lastResult, schedule: state.editableSchedule }
+    : state.lastResult;
+  const payload = Object.assign({}, state.lastPayload, { result: resultToExport });
   const res = await fetch(url, { method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (!res.ok) { alert('Export failed'); return; }
@@ -1151,6 +1158,96 @@ function toggleChemoSlot(day, sess) {
   scheduleAutosave();
 }
 
+
+/* -- In-app result editing -- */
+function _namesInRow(row) {
+  return String(row.Assigned || '').replace('/', ',').split(',')
+    .map(n => n.trim()).filter(n => n && n !== '—' && n !== '-');
+}
+function _rebuildAssigned(names) {
+  return names.length ? names.join(', ') : '—';
+}
+
+function removePersonFromRow(idx, name) {
+  if (!confirm('Remove ' + name.replace(/\*$/,'') + ' from this clinic?')) return;
+  const row = state.editableSchedule.find(r => r._idx === idx);
+  if (!row) return;
+  const names = _namesInRow(row).filter(n => n !== name);
+  row.Assigned = _rebuildAssigned(names);
+  renderResultGrid(null);
+  revalidateEdits();
+}
+
+function openAddPersonToRow(idx) {
+  const row = state.editableSchedule.find(r => r._idx === idx);
+  if (!row) return;
+  const current = _namesInRow(row).map(n => n.replace(/\*$/,'').toLowerCase());
+  const busySameSession = new Set();
+  state.editableSchedule.forEach(r => {
+    if (r.Day === row.Day && r.Session === row.Session && r._idx !== idx) {
+      _namesInRow(r).forEach(n => busySameSession.add(n.replace(/\*$/,'').toLowerCase()));
+    }
+  });
+  const eligible = state.people.filter(p => {
+    const nm = p.name.toLowerCase();
+    return p.active && !current.includes(nm);
+  });
+  if (!eligible.length) { alert('No eligible people found on the roster.'); return; }
+
+  const rotation = row.Specialty || '';
+  const sorted = eligible.slice().sort((a, b) => {
+    const aMatch = rotation && a.rotation === rotation ? 0 : 1;
+    const bMatch = rotation && b.rotation === rotation ? 0 : 1;
+    if (aMatch !== bMatch) return aMatch - bMatch;
+    return a.name.localeCompare(b.name);
+  });
+
+  const picked = prompt('Add who to ' + row.Consultant + ' (' + row.Day + ' ' + row.Session + ')?\n\n' +
+    'Type an exact name from the roster:\n' + sorted.map(p => p.name).join(', '));
+  if (!picked) return;
+  const match = sorted.find(p => p.name.toLowerCase() === picked.trim().toLowerCase());
+  if (!match) { alert('No roster match for "' + picked + '". No changes made.'); return; }
+
+  const names = _namesInRow(row);
+  names.push(match.name);
+  row.Assigned = _rebuildAssigned(names);
+  renderResultGrid(null);
+  revalidateEdits();
+}
+
+async function revalidateEdits() {
+  try {
+    const res = await fetch('/api/validate', { method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ schedule: state.editableSchedule,
+                            week_start: document.getElementById('week-start').value }) });
+    state.editWarnings = await res.json();
+  } catch(e) {
+    state.editWarnings = [];
+  }
+  renderEditWarnings();
+}
+
+function renderEditWarnings() {
+  const w = state.editWarnings || [];
+  let box = document.getElementById('edit-warnings');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'edit-warnings';
+    box.style.padding = '10px 16px';
+    box.style.fontSize = '12px';
+    box.style.borderTop = '1px solid var(--border)';
+    document.getElementById('result-grid').insertAdjacentElement('afterend', box);
+  }
+  if (!w.length) { box.innerHTML = ''; box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const errs = w.filter(x => x.level === 'error');
+  const infos = w.filter(x => x.level === 'info');
+  let html = '';
+  if (errs.length) html += errs.map(x => '<div class="val-error">⚠ ' + x.msg + '</div>').join('');
+  if (infos.length) html += infos.map(x => '<div class="val-info">' + x.msg + '</div>').join('');
+  box.innerHTML = html;
+}
 
 async function renderPreview() {
   const card = document.getElementById('preview-card');
@@ -1200,7 +1297,10 @@ function bandFor(patients) {
 /* ── result grid: patients + staffing flags, per your request ── */
 function renderResultGrid(data) {
   const el = document.getElementById('result-grid');
-  const sched = data.schedule || [];
+  // On first render after a solve, take ownership of an editable copy.
+  // Subsequent re-renders (after an edit) reuse state.editableSchedule.
+  if (data) state.editableSchedule = (data.schedule || []).map((r, i) => ({ ...r, _idx: i }));
+  const sched = state.editableSchedule || [];
   if (!sched.length) { el.style.display = 'none'; return; }
   el.style.display = 'block';
   let html = '<div class="rg-header"><span></span><span>Consultant</span><span>Day/Session</span>' +
@@ -1216,18 +1316,22 @@ function renderResultGrid(data) {
     if (names.length < band) { flagClass='rg-flag-under'; flagIcon='▽'; ptsClass='pts-under'; }
     else if (names.length > band) { flagClass='rg-flag-over'; flagIcon='△'; ptsClass='pts-over'; }
     const chips = names.length
-      ? names.map(n => '<span class="chip' + (n.endsWith('*') ? ' ext' : '') + '">' + n + '</span>').join('')
+      ? names.map(n => '<span class="chip' + (n.endsWith('*') ? ' ext' : '') + '"' +
+          ' title="Click to remove" onclick="removePersonFromRow(' + r._idx + ',\'' +
+          n.replace(/'/g,"\\'") + '\')">' + n + ' ×</span>').join('')
       : '<span style="color:var(--muted);font-size:11px">unassigned</span>';
+    const addBtn = '<span class="chip-add" onclick="openAddPersonToRow(' + r._idx + ')">+ add</span>';
     html += '<div class="rg-row">' +
       '<span></span>' +
       '<span style="font-weight:700">' + (r.Consultant||'') + '</span>' +
       '<span style="font-size:11px;color:var(--muted)">' + (r.Day||'') + ' ' + (r.Session||'') + '</span>' +
       '<span class="pts-pill ' + ptsClass + '">' + pts + '</span>' +
-      '<span>' + chips + '</span>' +
+      '<span>' + chips + addBtn + '</span>' +
       '<span class="' + flagClass + '">' + flagIcon + '</span>' +
       '</div>';
   });
   el.innerHTML = html;
+  renderEditWarnings();
 }
 
 /* ── STEP 4: week autosave / load ── */

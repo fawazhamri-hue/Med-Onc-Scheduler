@@ -304,6 +304,58 @@ def _merge_db_roster(payload, db):
 # =====================================================
 # STEP 2: post-solve validator (independent audit, warn-only, never blocks)
 # =====================================================
+# =====================================================
+# Recompute Workload Summary totals from a (possibly hand-edited) schedule.
+# The solver's own fellows_summary/residents_summary/assistants_summary are
+# only correct for the schedule it produced; once the chief edits assignments
+# in the browser, those counts go stale. Export must reflect what's actually
+# on the page, not what the solver originally said.
+# =====================================================
+def _recompute_summaries(schedule, fellows_df, residents_df):
+    def names_of(row):
+        raw = str(row.get("Assigned", "") or "")
+        return [n.strip().rstrip("*") for n in raw.replace("/", ",").split(",")
+                if n.strip() and n.strip() not in ("—", "-")]
+
+    totals = {}
+    inside = {}
+    for r in (schedule or []):
+        specialty = str(r.get("Specialty", "") or "")
+        for n in names_of(r):
+            key = n.lower()
+            totals[key] = totals.get(key, 0) + 1
+            if specialty:
+                inside.setdefault(key, 0)
+
+    # Fellows/NPs: pull Rotation + Role from the merged roster DataFrame.
+    fellows_summary = []
+    if fellows_df is not None and not fellows_df.empty:
+        for _, row in fellows_df.iterrows():
+            name = str(row.get("Fellow", "")).strip()
+            key = name.lower()
+            if key not in totals:
+                continue  # not assigned anywhere in the (edited) schedule
+            rotation = str(row.get("Rotation", "") or "")
+            role = str(row.get("Role", "Fellow") or "Fellow")
+            total = totals.get(key, 0)
+            ins = sum(1 for r in (schedule or [])
+                     if key in [n.lower() for n in names_of(r)]
+                     and str(r.get("Specialty", "")) == rotation)
+            fellows_summary.append({"Fellow": name, "Rotation": rotation,
+                                    "Role": role, "Total": total, "Inside": ins})
+
+    residents_summary = []
+    if residents_df is not None and not residents_df.empty:
+        for _, row in residents_df.iterrows():
+            name = str(row.get("Resident", "")).strip()
+            key = name.lower()
+            if key not in totals:
+                continue
+            residents_summary.append({"Resident": name, "Total": totals.get(key, 0)})
+
+    return fellows_summary, residents_summary
+
+
 def validate_schedule(schedule, fellows, residents):
     """
     Re-checks the solver's OUTPUT (not the model) against the hard rules:
@@ -590,6 +642,14 @@ def api_export_xlsx():
         result = {**result_data, "availability": [], "availability_orphans": [],
                   "purple_orphans_leave": [], "on_leave": []}
 
+        # Recompute Workload Summary from the schedule actually being exported
+        # (which may have been hand-edited in the browser after solving).
+        fs, rs = _recompute_summaries(result.get("schedule", []), fellows_df, residents_df)
+        if fs:
+            result["fellows_summary"] = fs
+        if rs:
+            result["residents_summary"] = rs
+
         tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
         tmp.close()
         export_xlsx(result, fellows_df, residents_df, tmp.name,
@@ -607,12 +667,23 @@ def api_export_docx():
     try:
         payload = request.get_json()
         result_data = payload.get("result")
-        _, _, _, _, _, date_map = _assemble_from_payload(payload)
+        db = get_db()
+        payload = _merge_db_roster(payload, db)
+        fellows_df, residents_df, clinics_df, pins_df, availability_df, date_map = \
+            _assemble_from_payload(payload)
         week_start = payload.get("week_start", "")
         week_end = payload.get("week_end", "")
 
         result = {**result_data, "availability": [], "availability_orphans": [],
                   "purple_orphans_leave": [], "on_leave": []}
+
+        # Recompute Workload Summary from the schedule actually being exported
+        # (which may have been hand-edited in the browser after solving).
+        fs, rs = _recompute_summaries(result.get("schedule", []), fellows_df, residents_df)
+        if fs:
+            result["fellows_summary"] = fs
+        if rs:
+            result["residents_summary"] = rs
 
         day_info = [(d.capitalize(), d.upper(), date_map.get(d.capitalize(), ""))
                     for d in DAYS]
