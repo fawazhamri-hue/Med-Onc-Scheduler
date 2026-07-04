@@ -54,7 +54,7 @@ def _parse_slots(val):
     return slots
 
 
-def _build_cfg(db):
+def _build_cfg(db, chemo_slots_override=None):
     cfg = SolverConfig()
     for key, val in db.all_settings().items():
         if key == "solver_timeout_s":
@@ -73,6 +73,14 @@ def _build_cfg(db):
                 setattr(cfg, key, int(val))
             except (TypeError, ValueError):
                 pass
+    # Per-week override: the Schedule page lets the chief tick which day/session
+    # slots need chemo THIS week, since it isn't the same every week (e.g. some
+    # weeks have no Sunday AM chemo). This replaces the Rules-page default only
+    # for this solve — Rules stays the fallback for weeks with no override saved.
+    if chemo_slots_override is not None:
+        cfg.chemo_slots = [(d, s) for d, s in chemo_slots_override
+                          if d in DAYS and s in ("AM", "PM")]
+        cfg.chemo_active = len(cfg.chemo_slots) > 0
     return cfg
 
 
@@ -293,6 +301,127 @@ def _merge_db_roster(payload, db):
     }
 
 
+# =====================================================
+# STEP 2: post-solve validator (independent audit, warn-only, never blocks)
+# =====================================================
+def validate_schedule(schedule, fellows, residents):
+    """
+    Re-checks the solver's OUTPUT (not the model) against the hard rules:
+      V1  same person in 2+ clinics, same day+session   -> error
+      V2  AddOn with helper count != 1                  -> error
+      V3  person assigned more clinics than their Max   -> error
+      V4  chemo slot with 0 helpers                      -> error
+      V5  person on Leave/inactive but still assigned    -> error
+      V6  person under their Min                          -> info (not urgent)
+    Returns a list of {"level": "error"|"info", "msg": str}.
+    """
+    out = []
+    limits = {}
+    for p in (fellows or []):
+        limits[str(p.get("name", "")).strip().lower()] = (
+            int(p.get("min_clinics", 0) or 0),
+            int(p.get("max_clinics", 99) or 99),
+            str(p.get("status", "Active")))
+    for p in (residents or []):
+        limits[str(p.get("name", "")).strip().lower()] = (
+            int(p.get("min_clinics", 0) or 0),
+            int(p.get("max_clinics", 99) or 99),
+            str(p.get("status", "Active")))
+
+    def names_of(row):
+        raw = str(row.get("Assigned", "") or "")
+        return [n.strip().rstrip("*") for n in raw.replace("/", ",").split(",")
+                if n.strip() and n.strip() not in ("—", "-")]
+
+    # V1: same-session double-booking
+    per_session = {}
+    for r in (schedule or []):
+        key = (r.get("Day"), r.get("Session"))
+        for n in names_of(r):
+            per_session.setdefault(key, {}).setdefault(n.lower(), []).append(
+                r.get("Consultant", "?"))
+    for (day, sess), people in per_session.items():
+        for n, cons_list in people.items():
+            if len(cons_list) > 1:
+                out.append({"level": "error",
+                            "msg": f"DOUBLE-BOOKED: {n.title()} on {day} {sess} "
+                                   f"in {len(cons_list)} clinics ({', '.join(cons_list)})"})
+
+    # V2: AddOn helper count must be exactly 1
+    for r in (schedule or []):
+        if r.get("IsAddOn"):
+            k = len(names_of(r))
+            if k != 1:
+                out.append({"level": "error",
+                            "msg": f"ADDON STAFFING: {r.get('Day')} {r.get('Session')} "
+                                   f"{r.get('Consultant')} has {k} helper(s) (must be exactly 1)"})
+
+    # V3 / V5 / V6: totals vs Min/Max/Status
+    totals = {}
+    for r in (schedule or []):
+        for n in names_of(r):
+            totals[n.lower()] = totals.get(n.lower(), 0) + 1
+    for n, t in totals.items():
+        if n in limits:
+            mn, mx, status = limits[n]
+            if str(status).lower() == "leave":
+                out.append({"level": "error",
+                            "msg": f"ON-LEAVE ASSIGNED: {n.title()} is marked Leave/"
+                                   f"inactive but has {t} clinic(s) this week"})
+            if t > mx:
+                out.append({"level": "error",
+                            "msg": f"OVER MAX: {n.title()} has {t} clinics (max {mx})"})
+            elif t < mn:
+                out.append({"level": "info",
+                            "msg": f"Under min: {n.title()} has {t} clinics (min {mn})"})
+
+    # V4: chemo slot uncovered
+    for r in (schedule or []):
+        cons = str(r.get("Consultant", "")).lower()
+        if "chemo" in cons and len(names_of(r)) == 0:
+            out.append({"level": "error",
+                        "msg": f"CHEMO UNCOVERED: {r.get('Day')} {r.get('Session')}"})
+    return out
+
+
+# =====================================================
+# STEP 3: pre-generate summary (what WILL be sent to the solver, no solving)
+# =====================================================
+@app.route("/api/solve-preview", methods=["POST"])
+def api_solve_preview():
+    try:
+        payload = request.get_json() or {}
+        db = get_db()
+        merged = _merge_db_roster(dict(payload), db)
+        fellows = merged.get("fellows", [])
+        residents = merged.get("residents", [])
+        clinics = payload.get("clinics", [])
+
+        active_fellows = [f for f in fellows if f.get("status") != "Leave"
+                          and str(f.get("role", "")).lower() != "np"]
+        active_nps = [f for f in fellows if f.get("status") != "Leave"
+                     and str(f.get("role", "")).lower() == "np"]
+        active_residents = [r for r in residents if r.get("status") != "Leave"]
+        excluded = ([f["name"] for f in fellows if f.get("status") == "Leave"] +
+                   [r["name"] for r in residents if r.get("status") == "Leave"])
+
+        addons = [c for c in clinics if (c.get("clinic_type") or "") == "AddOn"]
+        total_patients = sum(int(c.get("patients", 0) or 0) for c in clinics)
+
+        return jsonify({
+            "active_fellows": len(active_fellows),
+            "active_nps": len(active_nps),
+            "active_residents": len(active_residents),
+            "excluded": excluded,
+            "pins": merged.get("pins", []),
+            "clinic_count": len(clinics),
+            "addon_count": len(addons),
+            "total_patients": total_patients,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/solve", methods=["POST"])
 def api_solve():
     try:
@@ -319,9 +448,15 @@ def api_solve():
 
         fellows_df, residents_df, clinics_df, pins_df, availability_df, date_map = \
             _assemble_from_payload(payload)
-        cfg = _build_cfg(db)
+        cfg = _build_cfg(db, chemo_slots_override=payload.get("chemo_slots"))
         result = solve(clinics_df, fellows_df, residents_df, pins_df,
                        config=cfg, availability_path=availability_df)
+
+        # STEP 2: independent post-solve audit of the OUTPUT (warn-only).
+        validation_warnings = validate_schedule(
+            result.get("schedule", []), payload.get("fellows", []),
+            payload.get("residents", []))
+
         return jsonify({
             "status": result["status"],
             "schedule": result.get("schedule", []),
@@ -331,9 +466,92 @@ def api_solve():
             "purple_orphans_leave": result.get("purple_orphans_leave", []),
             "availability_orphans": result.get("availability_orphans", []),
             "date_map": date_map,
+            "validation_warnings": validation_warnings,
         })
     except Exception as e:
         return jsonify({"error": traceback.format_exc(), "message": str(e)}), 500
+
+
+@app.route("/api/validate", methods=["POST"])
+def api_validate():
+    """STEP 2: re-run the validator against an (edited) schedule the person
+    is looking at, without re-solving. Used by the in-app result editor."""
+    try:
+        data = request.get_json() or {}
+        db = get_db()
+        merged = _merge_db_roster({"fellows": [], "residents": [], "pins": [],
+                                   "availability": [], "clinics": [],
+                                   "week_start": data.get("week_start", "")}, db)
+        warnings = validate_schedule(data.get("schedule", []),
+                                     merged.get("fellows", []),
+                                     merged.get("residents", []))
+        return jsonify(warnings)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/week/<week_start>", methods=["GET"])
+def api_week_load(week_start):
+    """STEP 4: load a previously saved week's clinics/pins/exclusions/chemo slots."""
+    try:
+        db = get_db()
+        wk = next((w for w in db.list_weeks() if w["start_date"] == week_start), None)
+        chemo_raw = db.get_setting(f"chemo_slots:{week_start}", None)
+        chemo_slots = _parse_slots(chemo_raw) if chemo_raw else None
+        if not wk:
+            return jsonify({"exists": False, "clinics": [], "pins": [],
+                            "exclusions": [], "chemo_slots": chemo_slots})
+        clinics = [{"day": c["day"], "session": c["session"],
+                    "consultant": c["consultant"], "specialty": c["specialty"],
+                    "clinic_type": c["clinic_type"] or "", "patients": c["patients"]}
+                   for c in db.list_week_clinics(wk["id"])]
+        pins = [{"person": p["person_name"], "day": p["day"],
+                 "session": p["session"], "consultant": p["consultant"]}
+                for p in db.list_week_pins(wk["id"])]
+        excl = [{"person": x["person_name"], "day": x["day"],
+                 "session": x["session"], "reason": x["reason"]}
+                for x in db.list_week_exclusions(wk["id"])]
+        return jsonify({"exists": True, "clinics": clinics, "pins": pins,
+                        "exclusions": excl, "chemo_slots": chemo_slots})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/week/<week_start>", methods=["POST"])
+def api_week_save(week_start):
+    """STEP 4: save/overwrite this week's clinics/pins/exclusions/chemo slots."""
+    try:
+        data = request.get_json() or {}
+        db = get_db()
+        wid = db.create_week(week_start)  # idempotent: returns existing id if present
+        for c in db.list_week_clinics(wid):
+            db.delete_week_clinic(c["id"])
+        for p in db.list_week_pins(wid):
+            db.delete_week_pin(p["id"])
+        for x in db.list_week_exclusions(wid):
+            db.delete_week_exclusion(x["id"])
+        for c in data.get("clinics", []):
+            db.add_week_clinic(wid, c["day"], c["session"], c["consultant"],
+                               c.get("specialty", ""), c.get("clinic_type", ""),
+                               int(c.get("patients", 0) or 0))
+        for p in data.get("pins", []):
+            db.add_week_pin(wid, p["person"], p["day"], p["session"], p["consultant"])
+        for x in data.get("exclusions", []):
+            db.add_week_exclusion(wid, x["person"], x["day"], x["session"],
+                                  x.get("reason", ""))
+        # Per-week chemo slot override, stored as "day:sess, day:sess, ..."
+        if "chemo_slots" in data:
+            slots_str = ", ".join(f"{d}:{s}" for d, s in data["chemo_slots"])
+            db.set_setting(f"chemo_slots:{week_start}", slots_str)
+        return jsonify({"ok": True, "week_id": wid})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/weeks", methods=["GET"])
+def api_weeks_list():
+    db = get_db()
+    return jsonify([w["start_date"] for w in db.list_weeks()])
 
 
 @app.route("/api/debug/last-payload", methods=["GET"])

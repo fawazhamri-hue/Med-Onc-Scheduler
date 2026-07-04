@@ -159,6 +159,38 @@
              border: 2px solid #fff; border-top-color: transparent;
              border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* ── result grid (patient staffing flags) ── */
+  .rg-header { display: grid; grid-template-columns: 30px 130px 100px 70px 1fr 24px;
+               padding: 8px 14px; gap: 6px; font-size: 10px; font-weight: 700;
+               color: var(--muted); text-transform: uppercase;
+               border-bottom: 1px solid var(--border); background: #fafcfe; }
+  .rg-row { display: grid; grid-template-columns: 30px 130px 100px 70px 1fr 24px;
+            padding: 7px 14px; gap: 6px; border-bottom: 1px solid #f0f4f8;
+            align-items: center; font-size: 12px; }
+  .rg-flag-ok { color: #1e7e46; font-weight: 700; text-align: center; }
+  .rg-flag-under { color: #9a6b00; font-weight: 700; text-align: center; }
+  .rg-flag-over { color: #b3261e; font-weight: 700; text-align: center; }
+  .chip { display: inline-block; background: #eef4fb; color: #1f4a73;
+          border: 1px solid #d4e3f3; border-radius: 12px; padding: 1px 8px;
+          font-size: 11px; font-weight: 600; margin: 1px 3px 1px 0; }
+  .chip.ext { background: #fff4e5; border-color: #f5ddb8; color: #92400e; }
+  .pts-pill { font-size: 11px; font-weight: 700; padding: 2px 8px;
+              border-radius: 10px; text-align: center; display: inline-block; }
+  .pts-ok { background: #e3f4ea; color: #1e7e46; }
+  .pts-under { background: #fdf3d7; color: #9a6b00; }
+  .pts-over { background: #fde9e7; color: #b3261e; }
+  .val-error { color: #b3261e; font-weight: 700; }
+  .val-info { color: #9a6b00; }
+  .preview-item { display: inline-block; margin-right: 16px; font-size: 12px; color: var(--text); }
+  .preview-item b { font-size: 14px; }
+  .preview-warn { color: #9a6b00; }
+  .chemo-grid { display: grid; grid-template-columns: 50px repeat(2, 1fr);
+                gap: 4px 8px; font-size: 12px; }
+  .chemo-grid .ch-day { font-weight: 700; color: var(--muted); align-self: center; }
+  .chemo-check { display: flex; align-items: center; gap: 5px; cursor: pointer;
+                 padding: 3px 6px; border-radius: 5px; }
+  .chemo-check:hover { background: var(--row-hover); }
+  .chemo-check input { cursor: pointer; }
   @media (max-width: 900px) {
     #sidebar { width: 50px; min-width: 50px; }
     .brand, .nav-item span, .sidebar-foot { display: none; }
@@ -204,7 +236,7 @@
 
     <div class="week-toolbar">
       <label style="font-size:13px;font-weight:600">Week start (Sunday):</label>
-      <input type="date" id="week-start">
+      <input type="date" id="week-start" onchange="loadWeekState()">
       <button class="btn btn-ghost" onclick="loadTemplate()">Load template clinics</button>
       <label class="btn btn-ghost" style="cursor:pointer">
         Import patient numbers (Excel)
@@ -227,6 +259,11 @@
           <div id="clinic-list"></div>
         </div>
 
+        <!-- STEP 3: pre-generate summary -->
+        <div class="card" id="preview-card" style="margin-bottom:12px;padding:12px 16px">
+          <div style="font-size:12px;color:var(--muted)">Add clinics to see a pre-flight summary here.</div>
+        </div>
+
         <div class="card">
           <div style="padding:14px 16px;display:flex;gap:10px;flex-wrap:wrap">
             <button class="btn btn-primary" id="gen-btn" onclick="generate()">▶ &nbsp;Generate schedule</button>
@@ -234,11 +271,21 @@
             <button class="btn btn-ghost" id="dl-docx" style="display:none" onclick="downloadDocx()">↓ Word</button>
           </div>
           <div class="banner" id="gen-banner"></div>
+          <!-- patient-count staffing grid, populated after a successful solve -->
+          <div id="result-grid" style="display:none"></div>
           <div id="gen-log"></div>
         </div>
       </div>
 
       <div class="split-side">
+        <!-- Per-week chemoassessment slots -->
+        <div class="card" style="padding:16px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px">Chemoassessment slots (this week)</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+            Not every week needs the same slots — tick which ones apply.
+          </div>
+          <div id="chemo-checklist"></div>
+        </div>
         <div class="card" style="padding:16px;margin-bottom:16px">
           <div style="font-size:13px;font-weight:700;margin-bottom:10px">Purple pins (this week)</div>
           <div id="week-pins-list" class="detail-list"></div>
@@ -476,6 +523,7 @@ under_min_res = rotation_fairness  &gt;  under_min_fellow  &gt;  over_assign  &g
 <script>
 const state = {
   people: [], clinics: [], pins: [], excls: [],
+  chemoSlots: null,   // null = use Rules-page default; array = per-week override
   selPersonId: null, selClinicIdx: null, selPinIdx: null, selExclIdx: null,
   selLeaveId: null, selPinId: null, selExclId: null,
   personLeaves: [], personPins: [], personExcls: [],
@@ -693,6 +741,8 @@ function renderClinics() {
   if (!sorted.length) {
     el.innerHTML = '<div style="padding:20px;color:var(--muted);text-align:center">' +
       'No clinics yet. Import patient numbers, load a template, or add a clinic.</div>';
+    scheduleAutosave();
+    renderPreview();
     return;
   }
   let html = '';
@@ -718,12 +768,14 @@ function renderClinics() {
       '<span style="font-size:11px;color:var(--muted)">' + c.day.toUpperCase() + '</span></div>';
   });
   el.innerHTML = html;
+  scheduleAutosave();
+  renderPreview();
 }
 function selectClinic(idx) {
   state.selClinicIdx = (state.selClinicIdx === idx) ? null : idx;
   renderClinics();
 }
-function updatePts(idx, val) { state.clinics[idx].patients = parseInt(val) || 0; }
+function updatePts(idx, val) { state.clinics[idx].patients = parseInt(val) || 0; scheduleAutosave(); renderPreview(); }
 function toggleAddOn() {
   if (state.selClinicIdx === null) { alert('Select a clinic row first'); return; }
   const c = state.clinics[state.selClinicIdx];
@@ -828,6 +880,7 @@ function renderPins() {
         ' onclick="state.selPinIdx=' + i + ';renderPins()">' +
         p.person + ' → ' + p.consultant + ' ' + p.day.toUpperCase() + ' ' + p.session + '</div>').join('')
     : '<div class="detail-list-empty">None</div>';
+  scheduleAutosave();
 }
 function renderExcls() {
   document.getElementById('week-excl-list').innerHTML = state.excls.length
@@ -837,6 +890,7 @@ function renderExcls() {
         e.person + ' ' + e.day.toUpperCase() + ' ' + e.session +
         (e.reason ? ' · ' + e.reason : '') + '</div>').join('')
     : '<div class="detail-list-empty">None</div>';
+  scheduleAutosave();
 }
 function openAddPinModal() {
   document.getElementById('mpin-name').value = '';
@@ -908,7 +962,8 @@ function buildPayload() {
     pins: state.pins.map(p => ({ person: p.person, day: p.day,
       session: p.session, consultant: p.consultant })),
     availability: state.excls.map(e => ({ person: e.person, day: e.day,
-      session: e.session, reason: e.reason })) };
+      session: e.session, reason: e.reason })),
+    chemo_slots: state.chemoSlots !== null ? state.chemoSlots : CHEMO_DEFAULT };
 }
 function logLine(text, cls) {
   const el = document.getElementById('gen-log');
@@ -965,12 +1020,28 @@ async function generate() {
       logLine('Warnings: ' + warns.length, warns.length ? 'log-warn' : 'log-ok');
       warns.forEach(r => logLine('  ' + r.Day + ' ' + r.Session + ' ' +
                                  r.Consultant + ': ' + r.Warnings, 'log-warn'));
+
+      // STEP 2: independent validator output — separate from solver Warnings above.
+      const vw = data.validation_warnings || [];
+      const vErrs = vw.filter(v => v.level === 'error');
+      const vInfos = vw.filter(v => v.level === 'info');
+      if (vErrs.length) {
+        logLine('\nVALIDATION ERRORS (' + vErrs.length + '):', 'val-error');
+        vErrs.forEach(v => logLine('  ' + v.msg, 'val-error'));
+      }
+      if (vInfos.length) {
+        logLine('\nValidation notes (' + vInfos.length + '):', 'val-info');
+        vInfos.forEach(v => logLine('  ' + v.msg, 'val-info'));
+      }
+
       if (['OPTIMAL','FEASIBLE'].indexOf(data.status) >= 0) {
         logLine('\nSchedule ready. Download below.', 'log-ok');
-        if (!warns.length) setBanner('ok', '✓ ' + data.status + ' — schedule ready, no warnings');
+        if (!warns.length && !vErrs.length) setBanner('ok', '✓ ' + data.status + ' — schedule ready, no warnings');
+        else if (vErrs.length) setBanner('err', '⚠ ' + data.status + ' but ' + vErrs.length + ' validation error(s) — review before sending');
         else setBanner('warn', '⚠ ' + data.status + ' with ' + warns.length + ' warning(s)');
         document.getElementById('dl-xlsx').style.display = 'inline-flex';
         document.getElementById('dl-docx').style.display = 'inline-flex';
+        renderResultGrid(data);
       } else {
         setBanner('err', '✗ ' + data.status + ' — no schedule produced');
       }
@@ -997,7 +1068,162 @@ async function downloadFile(url, ext) {
   a.click();
 }
 
-/* ── IMPORT ROTA ── */
+/* ── Per-week chemoassessment slot checklist ── */
+const CHEMO_DAYS = [['sun','Sun'],['mon','Mon'],['tue','Tue'],['wed','Wed'],['thu','Thu']];
+// Matches solver_core.py's SolverConfig default — used only the first time a
+// week has no saved override, so existing behaviour doesn't change silently.
+const CHEMO_DEFAULT = [['sun','PM'],['mon','AM'],['tue','AM'],['wed','AM'],['thu','AM']];
+
+function chemoActiveSet() {
+  const slots = state.chemoSlots !== null ? state.chemoSlots : CHEMO_DEFAULT;
+  return new Set(slots.map(s => s[0] + ':' + s[1]));
+}
+function renderChemoChecklist() {
+  const active = chemoActiveSet();
+  let html = '<div class="chemo-grid">';
+  CHEMO_DAYS.forEach(([d, label]) => {
+    html += '<div class="ch-day">' + label + '</div>';
+    ['AM','PM'].forEach(sess => {
+      const key = d + ':' + sess;
+      const checked = active.has(key) ? 'checked' : '';
+      html += '<label class="chemo-check">' +
+        '<input type="checkbox" ' + checked + ' onchange="toggleChemoSlot(\'' + d + '\',\'' + sess + '\')">' +
+        sess + '</label>';
+    });
+  });
+  html += '</div>';
+  document.getElementById('chemo-checklist').innerHTML = html;
+}
+function toggleChemoSlot(day, sess) {
+  const cur = state.chemoSlots !== null ? state.chemoSlots.slice() : CHEMO_DEFAULT.slice();
+  const key = day + ':' + sess;
+  const has = cur.some(s => s[0] === day && s[1] === sess);
+  state.chemoSlots = has ? cur.filter(s => !(s[0] === day && s[1] === sess))
+                         : cur.concat([[day, sess]]);
+  renderChemoChecklist();
+  scheduleAutosave();
+}
+
+
+async function renderPreview() {
+  const card = document.getElementById('preview-card');
+  if (!state.clinics.length) {
+    card.innerHTML = '<div style="font-size:12px;color:var(--muted)">Add clinics to see a pre-flight summary here.</div>';
+    return;
+  }
+  const payload = buildPayload();
+  try {
+    const res = await fetch('/api/solve-preview', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const p = await res.json();
+    if (p.error) { card.innerHTML = '<div style="font-size:12px;color:var(--err-fg)">' + p.error + '</div>'; return; }
+    let html = '<div style="display:flex;flex-wrap:wrap;gap:4px 0;align-items:center">' +
+      '<span class="preview-item"><b>' + p.active_fellows + '</b> fellows</span>' +
+      '<span class="preview-item"><b>' + p.active_nps + '</b> NPs</span>' +
+      '<span class="preview-item"><b>' + p.active_residents + '</b> residents</span>' +
+      '<span class="preview-item"><b>' + p.clinic_count + '</b> clinics</span>' +
+      '<span class="preview-item"><b>' + p.addon_count + '</b> AddOns</span>' +
+      '<span class="preview-item"><b>' + p.total_patients + '</b> total patients</span>' +
+      '</div>';
+    if (p.excluded && p.excluded.length) {
+      html += '<div class="preview-warn" style="margin-top:6px;font-size:12px">Excluded (leave/inactive): ' +
+        p.excluded.join(', ') + '</div>';
+    }
+    if (p.pins && p.pins.length) {
+      html += '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Pins applying this week: ' +
+        p.pins.map(x => x.person + '→' + x.consultant + ' ' + (x.day||'').toUpperCase() + ' ' + x.session).join(', ') +
+        '</div>';
+    }
+    card.innerHTML = html;
+  } catch(e) {
+    card.innerHTML = '<div style="font-size:12px;color:var(--err-fg)">Preview failed: ' + e.message + '</div>';
+  }
+}
+
+/* ── patient-count staffing bands, mirrors solver_core.py thresholds ── */
+function bandFor(patients) {
+  const p = parseInt(patients) || 0;
+  if (p < 12) return 0;
+  if (p <= 16) return 1;
+  if (p <= 23) return 2;
+  if (p <= 26) return 3;
+  return 3;
+}
+
+/* ── result grid: patients + staffing flags, per your request ── */
+function renderResultGrid(data) {
+  const el = document.getElementById('result-grid');
+  const sched = data.schedule || [];
+  if (!sched.length) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  let html = '<div class="rg-header"><span></span><span>Consultant</span><span>Day/Session</span>' +
+             '<span>Patients</span><span>Assigned</span><span></span></div>';
+  sched.forEach(r => {
+    const names = String(r.Assigned || '').replace('/', ',').split(',')
+      .map(n => n.trim()).filter(n => n && n !== '—' && n !== '-');
+    const isChemo = !!r.IsChemo;
+    const isAddOn = !!r.IsAddOn;
+    const pts = r.Patients != null ? r.Patients : '';
+    const band = isChemo ? 1 : (isAddOn ? 1 : bandFor(pts));
+    let flagClass = 'rg-flag-ok', flagIcon = '✓', ptsClass = 'pts-ok';
+    if (names.length < band) { flagClass='rg-flag-under'; flagIcon='▽'; ptsClass='pts-under'; }
+    else if (names.length > band) { flagClass='rg-flag-over'; flagIcon='△'; ptsClass='pts-over'; }
+    const chips = names.length
+      ? names.map(n => '<span class="chip' + (n.endsWith('*') ? ' ext' : '') + '">' + n + '</span>').join('')
+      : '<span style="color:var(--muted);font-size:11px">unassigned</span>';
+    html += '<div class="rg-row">' +
+      '<span></span>' +
+      '<span style="font-weight:700">' + (r.Consultant||'') + '</span>' +
+      '<span style="font-size:11px;color:var(--muted)">' + (r.Day||'') + ' ' + (r.Session||'') + '</span>' +
+      '<span class="pts-pill ' + ptsClass + '">' + pts + '</span>' +
+      '<span>' + chips + '</span>' +
+      '<span class="' + flagClass + '">' + flagIcon + '</span>' +
+      '</div>';
+  });
+  el.innerHTML = html;
+}
+
+/* ── STEP 4: week autosave / load ── */
+let _weekLoadInFlight = false;
+async function loadWeekState() {
+  const ws = document.getElementById('week-start').value;
+  if (!ws) return;
+  _weekLoadInFlight = true;
+  try {
+    const res = await fetch('/api/week/' + ws);
+    const w = await res.json();
+    state.clinics = w.clinics || [];
+    state.pins = w.pins || [];
+    state.excls = w.exclusions || [];
+    state.chemoSlots = w.chemo_slots || null;
+  } catch(e) { /* leave state as-is on failure */ }
+  _weekLoadInFlight = false;
+  state.selClinicIdx = null;
+  renderClinics();
+  renderPins();
+  renderExcls();
+  renderChemoChecklist();
+  renderPreview();
+}
+let _autosaveTimer = null;
+function scheduleAutosave() {
+  if (_weekLoadInFlight) return;
+  clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(saveWeekState, 600);
+}
+async function saveWeekState() {
+  const ws = document.getElementById('week-start').value;
+  if (!ws) return;
+  try {
+    await fetch('/api/week/' + ws, { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ clinics: state.clinics, pins: state.pins,
+                            exclusions: state.excls,
+                            chemo_slots: state.chemoSlots !== null ? state.chemoSlots : CHEMO_DEFAULT }) });
+  } catch(e) { /* best-effort autosave */ }
+}
+
+
 async function loadRota() {
   const f = document.getElementById('rota-file').files[0];
   if (!f) return;
@@ -1099,10 +1325,9 @@ document.querySelectorAll('.modal-overlay').forEach(m => {
   const sun = new Date(today);
   sun.setDate(today.getDate() + diff);
   document.getElementById('week-start').value = sun.toISOString().slice(0,10);
-  renderPins();
-  renderExcls();
-  renderClinics();
+  renderChemoChecklist();  // default view before loadWeekState resolves
   loadPeople();
+  loadWeekState();  // STEP 4: restore this week's clinics/pins/exclusions/chemo if saved
 })();
 </script>
 </body>
