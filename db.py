@@ -110,6 +110,17 @@ CREATE TABLE IF NOT EXISTS schedule_history (
     generated_at TEXT NOT NULL,
     result_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS favor_log (
+    id INTEGER PRIMARY KEY,
+    entry_date TEXT NOT NULL,          -- date the favor happened (editable)
+    person_name TEXT NOT NULL,         -- name, not id: survives even if person later deleted
+    description TEXT NOT NULL,         -- free text: what happened
+    tag TEXT DEFAULT '',               -- optional: Clinic coverage / Inpatient help / Other
+    compensated INTEGER DEFAULT 0,     -- 0 = outstanding, 1 = compensated
+    compensation_note TEXT DEFAULT '', -- how/when it was paid back
+    compensated_at TEXT DEFAULT '',    -- auto-set the moment it's toggled compensated
+    created_at TEXT NOT NULL           -- when the log entry itself was added
+);
 """
 
 # Default solver settings exposed in the GUI (Phase B fills the editor;
@@ -423,6 +434,63 @@ class Database:
                 "SELECT id, week_id, generated_at FROM schedule_history"
                 " ORDER BY generated_at DESC")
         return [dict(r) for r in rows]
+
+    # =====================================================================
+    # Favor log: unofficial coverage, inpatient help, ad-hoc favors the chief
+    # asks fellows for and needs to remember whether he's paid back.
+    # =====================================================================
+    def add_favor(self, entry_date, person_name, description, tag=""):
+        cur = self.con.execute(
+            "INSERT INTO favor_log (entry_date, person_name, description, tag,"
+            " compensated, compensation_note, compensated_at, created_at)"
+            " VALUES (?,?,?,?,0,'','',?)",
+            (entry_date, person_name.strip(), description.strip(), tag,
+             datetime.now().isoformat(timespec="seconds")))
+        self.con.commit()
+        return cur.lastrowid
+
+    def list_favors(self, person_name=None, outstanding_only=False):
+        q = "SELECT * FROM favor_log"
+        conds, params = [], []
+        if person_name:
+            conds.append("person_name=?")
+            params.append(person_name)
+        if outstanding_only:
+            conds.append("compensated=0")
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY entry_date DESC, id DESC"
+        return [dict(r) for r in self.con.execute(q, params)]
+
+    def get_favor(self, favor_id):
+        row = self.con.execute(
+            "SELECT * FROM favor_log WHERE id=?", (favor_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_favor(self, favor_id, **fields):
+        allowed = {"entry_date", "person_name", "description", "tag",
+                  "compensated", "compensation_note"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                vals.append(v)
+        if not sets:
+            return
+        # Auto-timestamp the moment something is marked compensated.
+        if fields.get("compensated") == 1:
+            sets.append("compensated_at=?")
+            vals.append(datetime.now().isoformat(timespec="seconds"))
+        elif fields.get("compensated") == 0:
+            sets.append("compensated_at=?")
+            vals.append("")
+        vals.append(favor_id)
+        self.con.execute(f"UPDATE favor_log SET {', '.join(sets)} WHERE id=?", vals)
+        self.con.commit()
+
+    def delete_favor(self, favor_id):
+        self.con.execute("DELETE FROM favor_log WHERE id=?", (favor_id,))
+        self.con.commit()
 
     # =====================================================================
     # The bridge: assemble solver inputs for a given week from the database.

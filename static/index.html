@@ -191,6 +191,24 @@
                  padding: 3px 6px; border-radius: 5px; }
   .chemo-check:hover { background: var(--row-hover); }
   .chemo-check input { cursor: pointer; }
+  /* ── favor log ── */
+  .favor-row { padding: 14px 16px; border-bottom: 1px solid #f0f4f8;
+               display: flex; gap: 12px; align-items: flex-start; }
+  .favor-row:last-child { border-bottom: none; }
+  .favor-status-dot { width: 10px; height: 10px; border-radius: 50%;
+                      margin-top: 5px; flex-shrink: 0; }
+  .favor-status-dot.outstanding { background: #e8930c; }
+  .favor-status-dot.compensated { background: #1e7e46; }
+  .favor-body { flex: 1; min-width: 0; }
+  .favor-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .favor-person { font-weight: 700; font-size: 13px; }
+  .favor-date { font-size: 11px; color: var(--muted); }
+  .favor-tag { font-size: 10px; font-weight: 700; padding: 1px 8px;
+               border-radius: 10px; background: #eef4fb; color: #1f4a73; }
+  .favor-desc { font-size: 13px; color: var(--text); margin-top: 3px; }
+  .favor-comp-note { font-size: 12px; color: #1e7e46; margin-top: 5px;
+                     background: #eaf7ee; padding: 6px 10px; border-radius: 6px; }
+  .favor-actions { display: flex; gap: 6px; flex-shrink: 0; }
   @media (max-width: 900px) {
     #sidebar { width: 50px; min-width: 50px; }
     .brand, .nav-item span, .sidebar-foot { display: none; }
@@ -216,6 +234,9 @@
   </div>
   <div class="nav-item" data-page="import" onclick="showPage('import')">
     <span class="nav-icon">⇩</span><span>Import ROTA</span>
+  </div>
+  <div class="nav-item" data-page="log" onclick="showPage('log')">
+    <span class="nav-icon">📔</span><span>Log</span>
   </div>
   <div class="nav-item" data-page="rules" onclick="showPage('rules')">
     <span class="nav-icon">⚙</span><span>Rules</span>
@@ -394,6 +415,33 @@
     </div>
   </div>
 
+  <!-- ══ LOG (favor tracker) ══ -->
+  <div class="page" id="page-log">
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>Log</h2>
+        <p>Unofficial coverage, inpatient help, ad-hoc favors — and whether you've paid them back</p>
+      </div>
+      <button class="btn btn-primary" onclick="openAddFavorModal()">＋ New entry</button>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:13px;font-weight:600">Filter by person:</label>
+      <select id="log-person-filter" onchange="loadFavors()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--font);font-size:13px">
+        <option value="">All</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="log-outstanding-only" onchange="loadFavors()">
+        Outstanding only
+      </label>
+      <span id="log-count" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+    </div>
+
+    <div class="card">
+      <div id="favor-list"></div>
+    </div>
+  </div>
+
   <!-- ══ RULES ══ -->
   <div class="page" id="page-rules">
     <div class="page-header">
@@ -517,6 +565,43 @@ under_min_res = rotation_fairness  &gt;  under_min_fellow  &gt;  over_assign  &g
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-favor">
+  <div class="modal" style="width:480px">
+    <h3 id="modal-favor-title">New log entry</h3>
+    <div class="form-grid">
+      <div class="form-group"><label>Date</label><input id="mfav-date" type="date"></div>
+      <div class="form-group"><label>Person</label>
+        <select id="mfav-person"></select></div>
+      <div class="form-group full"><label>What happened</label>
+        <input id="mfav-desc" placeholder="e.g. Covered Alqahtani PM clinic unofficially"></div>
+      <div class="form-group full"><label>Tag (optional)</label>
+        <select id="mfav-tag">
+          <option value="">—</option>
+          <option value="Clinic coverage">Clinic coverage</option>
+          <option value="Inpatient help">Inpatient help</option>
+          <option value="Other">Other</option>
+        </select></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-favor')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveFavor()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-compensate">
+  <div class="modal" style="width:440px">
+    <h3>Mark compensated</h3>
+    <div id="compensate-summary" style="font-size:13px;color:var(--muted);margin-bottom:14px"></div>
+    <div class="form-group full"><label>How / when compensated</label>
+      <input id="mcomp-note" placeholder="e.g. Gave him Thursday PM off in exchange"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('modal-compensate')">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmCompensate()">Mark compensated</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-sheet">
   <div class="modal" style="width:420px">
     <h3>Pick the week to import</h3>
@@ -544,6 +629,7 @@ function showPage(name) {
   document.querySelector('[data-page="' + name + '"]').classList.add('active');
   if (name === 'people') loadPeople();
   if (name === 'rules') loadRules();
+  if (name === 'log') { if (!state.people.length) loadPeople(); loadFavors(); }
 }
 
 function kindBadge(k) { return '<span class="badge badge-' + k + '">' + k.toUpperCase() + '</span>'; }
@@ -757,6 +843,133 @@ async function removeExcl() {
   await fetch('/api/exclusions/' + state.selExclId, { method: 'DELETE' });
   state.selExclId = null;
   selectPerson(state.selPersonId);
+}
+
+/* ── LOG (favor tracker) ── */
+let _favorCache = [];
+let _compensatingId = null;
+
+function _populateFavorPersonDropdowns() {
+  const filterSel = document.getElementById('log-person-filter');
+  const modalSel = document.getElementById('mfav-person');
+  const names = state.people.filter(p => p.active).map(p => p.name).sort();
+  const curFilter = filterSel.value;
+  filterSel.innerHTML = '<option value="">All</option>' +
+    names.map(n => '<option value="' + n + '">' + n + '</option>').join('');
+  filterSel.value = curFilter;
+  modalSel.innerHTML = names.map(n => '<option value="' + n + '">' + n + '</option>').join('');
+}
+
+async function loadFavors() {
+  _populateFavorPersonDropdowns();
+  const person = document.getElementById('log-person-filter').value;
+  const outstandingOnly = document.getElementById('log-outstanding-only').checked;
+  let url = '/api/favors?';
+  if (person) url += 'person=' + encodeURIComponent(person) + '&';
+  if (outstandingOnly) url += 'outstanding=1&';
+  const res = await fetch(url);
+  _favorCache = await res.json();
+  renderFavors();
+}
+
+function renderFavors() {
+  const el = document.getElementById('favor-list');
+  document.getElementById('log-count').textContent =
+    _favorCache.length + (_favorCache.length === 1 ? ' entry' : ' entries');
+  if (!_favorCache.length) {
+    el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">' +
+      'No entries yet. Click "New entry" whenever you remember one.</div>';
+    return;
+  }
+  el.innerHTML = _favorCache.map(f => {
+    const statusClass = f.compensated ? 'compensated' : 'outstanding';
+    const tag = f.tag ? '<span class="favor-tag">' + f.tag + '</span>' : '';
+    const compNote = f.compensated && f.compensation_note
+      ? '<div class="favor-comp-note">✓ Compensated ' +
+        (f.compensated_at ? 'on ' + f.compensated_at.slice(0,10) : '') +
+        ' — ' + f.compensation_note + '</div>'
+      : (f.compensated
+          ? '<div class="favor-comp-note">✓ Compensated ' +
+            (f.compensated_at ? 'on ' + f.compensated_at.slice(0,10) : '') + '</div>'
+          : '');
+    const actionBtn = f.compensated
+      ? '<button class="btn btn-ghost btn-sm" onclick="uncompensateFavor(' + f.id + ')">Undo</button>'
+      : '<button class="btn btn-primary btn-sm" onclick="openCompensateModal(' + f.id + ')">Mark paid</button>';
+    return '<div class="favor-row">' +
+      '<div class="favor-status-dot ' + statusClass + '" title="' +
+        (f.compensated ? 'Compensated' : 'Outstanding') + '"></div>' +
+      '<div class="favor-body">' +
+        '<div class="favor-head">' +
+          '<span class="favor-person">' + f.person_name + '</span>' +
+          '<span class="favor-date">' + f.entry_date + '</span>' + tag +
+        '</div>' +
+        '<div class="favor-desc">' + f.description + '</div>' +
+        compNote +
+      '</div>' +
+      '<div class="favor-actions">' + actionBtn +
+        '<button class="btn btn-danger btn-sm" onclick="deleteFavor(' + f.id + ')">Delete</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function openAddFavorModal() {
+  document.getElementById('mfav-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('mfav-desc').value = '';
+  document.getElementById('mfav-tag').value = '';
+  if (!state.people.length) { alert('Add people to the roster first.'); return; }
+  _populateFavorPersonDropdowns();
+  openModal('modal-favor');
+}
+
+async function saveFavor() {
+  const person = document.getElementById('mfav-person').value;
+  const desc = document.getElementById('mfav-desc').value.trim();
+  if (!person || !desc) { alert('Person and description are required.'); return; }
+  const res = await fetch('/api/favors', { method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      entry_date: document.getElementById('mfav-date').value,
+      person_name: person, description: desc,
+      tag: document.getElementById('mfav-tag').value }) });
+  const d = await res.json();
+  if (d.error) { alert(d.error); return; }
+  closeModal('modal-favor');
+  loadFavors();
+}
+
+function openCompensateModal(id) {
+  _compensatingId = id;
+  const f = _favorCache.find(x => x.id === id);
+  document.getElementById('compensate-summary').textContent =
+    f ? f.person_name + ' — ' + f.description : '';
+  document.getElementById('mcomp-note').value = '';
+  openModal('modal-compensate');
+}
+
+async function confirmCompensate() {
+  if (!_compensatingId) return;
+  const note = document.getElementById('mcomp-note').value.trim();
+  await fetch('/api/favors/' + _compensatingId, { method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ compensated: 1, compensation_note: note }) });
+  closeModal('modal-compensate');
+  _compensatingId = null;
+  loadFavors();
+}
+
+async function uncompensateFavor(id) {
+  if (!confirm('Mark this as outstanding again?')) return;
+  await fetch('/api/favors/' + id, { method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ compensated: 0 }) });
+  loadFavors();
+}
+
+async function deleteFavor(id) {
+  if (!confirm('Delete this log entry permanently?')) return;
+  await fetch('/api/favors/' + id, { method: 'DELETE' });
+  loadFavors();
 }
 
 /* ── SCHEDULE: CLINICS ── */

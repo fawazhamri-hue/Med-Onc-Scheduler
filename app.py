@@ -760,6 +760,51 @@ def api_import_rota_apply():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/favors", methods=["GET"])
+def api_favors_list():
+    """List favor-log entries. Optional filters: ?person=Name, ?outstanding=1."""
+    db = get_db()
+    person = request.args.get("person") or None
+    outstanding = request.args.get("outstanding") == "1"
+    return jsonify(db.list_favors(person_name=person, outstanding_only=outstanding))
+
+
+@app.route("/api/favors", methods=["POST"])
+def api_favors_add():
+    try:
+        data = request.get_json() or {}
+        db = get_db()
+        name = str(data.get("person_name", "")).strip()
+        desc = str(data.get("description", "")).strip()
+        if not name or not desc:
+            return jsonify({"error": "person_name and description are required"}), 400
+        fid = db.add_favor(data.get("entry_date") or date.today().isoformat(),
+                           name, desc, data.get("tag", ""))
+        return jsonify({"id": fid, "ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/favors/<int:favor_id>", methods=["PUT"])
+def api_favors_update(favor_id):
+    try:
+        data = request.get_json() or {}
+        db = get_db()
+        if not db.get_favor(favor_id):
+            return jsonify({"error": "Not found"}), 404
+        db.update_favor(favor_id, **data)
+        return jsonify({"ok": True, "favor": db.get_favor(favor_id)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/favors/<int:favor_id>", methods=["DELETE"])
+def api_favors_delete(favor_id):
+    db = get_db()
+    db.delete_favor(favor_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/people/export", methods=["GET"])
 def api_people_export():
     """
