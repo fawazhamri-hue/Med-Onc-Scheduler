@@ -24,6 +24,33 @@ COLOR_GREY   = "F2F2F2"
 COLOR_CHEMO  = "FFF2CC"
 COLOR_ADDON  = "FCE4B5"  # light orange — add-on clinics (consultant on leave)
 
+# Per-role helper-name colors in the schedule grid, per the chief's spec:
+#   Fellows -> red, Assistants & NPs -> black, Residents -> green
+COLOR_FELLOW    = "C00000"
+COLOR_RESIDENT  = "1E7E46"
+COLOR_DEFAULT   = "000000"   # NPs, assistants, externals, unrecognized names
+
+
+def _build_role_colors(result):
+    """
+    Name (lowercased, no trailing '*') -> hex color, built from the three
+    summary tables the solver returns. Fellows/NPs share fellows_summary but
+    are distinguished by the Role field; residents and assistants each have
+    their own summary list.
+    """
+    colors = {}
+    for f in result.get("fellows_summary", []) or []:
+        name = str(f.get("Fellow", "")).strip().lower()
+        role = str(f.get("Role", "Fellow")).strip().lower()
+        colors[name] = COLOR_DEFAULT if role == "np" else COLOR_FELLOW
+    for r in result.get("residents_summary", []) or []:
+        name = str(r.get("Resident", "")).strip().lower()
+        colors[name] = COLOR_RESIDENT
+    for a in result.get("assistants_summary", []) or []:
+        name = str(a.get("Assistant", "")).strip().lower()
+        colors[name] = COLOR_DEFAULT
+    return colors
+
 
 def _set_cell_bg(cell, hex_color):
     tc_pr = cell._tc.get_or_add_tcPr()
@@ -81,6 +108,34 @@ def _format_helpers(s):
     return "/".join(p.upper() for p in parts)
 
 
+def _write_helpers_cell(cell, assigned_str, role_colors, *, bg=None, size=10):
+    """
+    Same visual slot as _write_cell but writes each name as its own colored
+    run (Fellow=red, Resident=green, NP/Assistant/other=black) joined by '/'.
+    """
+    cell.text = ""
+    p = cell.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+
+    names = [n.strip() for n in (assigned_str or "").split(",") if n.strip()]
+    if not names or names == ["—"] or names == ["-"]:
+        _set_cell_borders(cell)
+        if bg:
+            _set_cell_bg(cell, bg)
+        return
+
+    for i, raw_name in enumerate(names):
+        is_external = raw_name.endswith("*")
+        lookup = raw_name.rstrip("*").strip().lower()
+        color = role_colors.get(lookup, COLOR_DEFAULT)
+        run = p.add_run(raw_name.upper() + ("/" if i < len(names) - 1 else ""))
+        _style_run(run, bold=False, size=size, color=color, italic=is_external)
+    if bg:
+        _set_cell_bg(cell, bg)
+    _set_cell_borders(cell)
+
+
 def export_docx(result, output_path, period_start, period_end, day_info):
     """
     day_info: list of (day_short, day_label, day_date) e.g.
@@ -95,6 +150,8 @@ def export_docx(result, output_path, period_start, period_end, day_info):
         section.orientation   = 1
         section.page_width    = Cm(29.7)
         section.page_height   = Cm(21.0)
+
+    role_colors = _build_role_colors(result)
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -164,18 +221,20 @@ def export_docx(result, output_path, period_start, period_end, day_info):
                 c = am_c[i]
                 is_chemo = c["IsChemo"]
                 is_addon = c.get("IsAddOn", False)
+                pts = c.get("Patients")
+                pts_suffix = f" ({pts})" if (pts not in (None, "") and not is_chemo) else ""
                 if is_chemo:
                     bg = COLOR_CHEMO
                     label = "CHEMOASSESSMENT"
                 elif is_addon:
                     bg = COLOR_ADDON
-                    label = f"(ADD-ON) {c['Consultant'].upper()}"
+                    label = f"(ADD-ON) {c['Consultant'].upper()}{pts_suffix}"
                 else:
                     bg = None
-                    label = c["Consultant"].upper()
+                    label = f"{c['Consultant'].upper()}{pts_suffix}"
                 _write_cell(cells[1], _code_for(c["Consultant"]), bold=True, bg=bg)
                 _write_cell(cells[2], label, bold=(is_chemo or is_addon), bg=bg)
-                _write_cell(cells[3], _format_helpers(c["Assigned"]), bg=bg)
+                _write_helpers_cell(cells[3], c["Assigned"], role_colors, bg=bg)
             else:
                 for col in (1, 2, 3):
                     _write_cell(cells[col], "")
@@ -183,18 +242,20 @@ def export_docx(result, output_path, period_start, period_end, day_info):
                 c = pm_c[i]
                 is_chemo = c["IsChemo"]
                 is_addon = c.get("IsAddOn", False)
+                pts = c.get("Patients")
+                pts_suffix = f" ({pts})" if (pts not in (None, "") and not is_chemo) else ""
                 if is_chemo:
                     bg = COLOR_CHEMO
                     label = "CHEMOASSESSMENT"
                 elif is_addon:
                     bg = COLOR_ADDON
-                    label = f"(ADD-ON) {c['Consultant'].upper()}"
+                    label = f"(ADD-ON) {c['Consultant'].upper()}{pts_suffix}"
                 else:
                     bg = None
-                    label = c["Consultant"].upper()
+                    label = f"{c['Consultant'].upper()}{pts_suffix}"
                 _write_cell(cells[4], _code_for(c["Consultant"]), bold=True, bg=bg)
                 _write_cell(cells[5], label, bold=(is_chemo or is_addon), bg=bg)
-                _write_cell(cells[6], _format_helpers(c["Assigned"]), bg=bg)
+                _write_helpers_cell(cells[6], c["Assigned"], role_colors, bg=bg)
             else:
                 for col in (4, 5, 6):
                     _write_cell(cells[col], "")
@@ -212,6 +273,16 @@ def export_docx(result, output_path, period_start, period_end, day_info):
     _write_cell(leg.rows[1].cells[1], "(ADD-ON) = consultant on leave; covered solo", size=9, align="left")
     _write_cell(leg.rows[1].cells[2], "", size=9, align="left")
     _write_cell(leg.rows[1].cells[3], "", size=9, align="left")
+
+    color_note = doc.add_paragraph()
+    r1 = color_note.add_run("Color code: ")
+    _style_run(r1, bold=True, size=9)
+    r2 = color_note.add_run("Fellows")
+    _style_run(r2, bold=True, size=9, color=COLOR_FELLOW)
+    r3 = color_note.add_run("   Residents")
+    _style_run(r3, bold=True, size=9, color=COLOR_RESIDENT)
+    r4 = color_note.add_run("   NPs / Assistants")
+    _style_run(r4, bold=True, size=9, color=COLOR_DEFAULT)
 
     # Workload summary tables
     doc.add_paragraph()

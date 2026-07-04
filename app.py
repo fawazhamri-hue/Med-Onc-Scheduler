@@ -18,7 +18,7 @@ import json
 import os
 import tempfile
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import pandas as pd
 from flask import Flask, jsonify, request, send_file
@@ -462,6 +462,7 @@ def api_solve():
             "schedule": result.get("schedule", []),
             "fellows_summary": result.get("fellows_summary", []),
             "residents_summary": result.get("residents_summary", []),
+            "assistants_summary": result.get("assistants_summary", []),
             "on_leave": result.get("on_leave", []),
             "purple_orphans_leave": result.get("purple_orphans_leave", []),
             "availability_orphans": result.get("availability_orphans", []),
@@ -686,6 +687,90 @@ def api_import_rota_apply():
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/people/export", methods=["GET"])
+def api_people_export():
+    """
+    Full roster backup — every person plus their leaves, recurring pins, and
+    recurring exclusions, as one JSON file. Re-importable via /api/people/import.
+    Doubles as a general backup: download occasionally to keep a local copy
+    independent of the server.
+    """
+    try:
+        db = get_db()
+        people = db.list_people(include_inactive=True)
+        out = []
+        for p in people:
+            out.append({
+                "name": p["name"], "kind": p["kind"], "rotation": p["rotation"],
+                "min_clinics": p["min_clinics"], "max_clinics": p["max_clinics"],
+                "start_date": p["start_date"], "end_date": p["end_date"],
+                "notes": p["notes"], "active": p["active"],
+                "leaves": [{"start_date": l["start_date"], "end_date": l["end_date"],
+                           "note": l["note"]} for l in db.list_leaves(p["id"])],
+                "pins": [{"day": x["day"], "session": x["session"],
+                         "consultant": x["consultant"]}
+                        for x in db.list_recurring_pins(p["id"])],
+                "exclusions": [{"day": x["day"], "session": x["session"]}
+                              for x in db.list_recurring_exclusions(p["id"])],
+            })
+        payload = {"exported_at": datetime.now().isoformat(timespec="seconds"),
+                  "people": out}
+        buf = io.BytesIO(json.dumps(payload, indent=2).encode())
+        return send_file(buf, as_attachment=True,
+                         download_name=f"oncoscheduler_roster_{date.today().isoformat()}.json",
+                         mimetype="application/json")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/people/import", methods=["POST"])
+def api_people_import():
+    """
+    Restore a roster previously downloaded via /api/people/export.
+    Safe by default: a person whose name already exists in the DB is SKIPPED
+    entirely (including their leaves/pins/exclusions) so a re-import can never
+    silently overwrite live data. Returns a per-person report.
+    """
+    try:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file uploaded"}), 400
+        data = json.load(f.stream)
+        people_in = data.get("people", [])
+        db = get_db()
+        existing_names = {p["name"].strip().lower()
+                          for p in db.list_people(include_inactive=True)}
+        results = []
+        for p in people_in:
+            name = str(p.get("name", "")).strip()
+            if not name:
+                continue
+            if name.lower() in existing_names:
+                results.append({"name": name, "action": "skipped",
+                                "reason": "already exists"})
+                continue
+            pid = db.add_person(
+                name, p.get("kind", "fellow"), p.get("rotation", ""),
+                int(p.get("min_clinics", 0) or 0), int(p.get("max_clinics", 5) or 5),
+                p.get("start_date") or None, p.get("end_date") or None,
+                p.get("notes", ""))
+            if not p.get("active", 1):
+                db.update_person(pid, active=0)
+            for lv in p.get("leaves", []):
+                db.add_leave(pid, lv["start_date"], lv["end_date"], lv.get("note", ""))
+            for pin in p.get("pins", []):
+                db.add_recurring_pin(pid, pin["day"], pin["session"], pin["consultant"])
+            for ex in p.get("exclusions", []):
+                db.add_recurring_exclusion(pid, ex["day"], ex["session"])
+            results.append({"name": name, "action": "added"})
+        added = sum(1 for r in results if r["action"] == "added")
+        skipped = sum(1 for r in results if r["action"] == "skipped")
+        return jsonify({"ok": True, "added": added, "skipped": skipped,
+                        "details": results})
+    except Exception as e:
+        return jsonify({"error": traceback.format_exc(), "message": str(e)}), 500
 
 
 @app.route("/api/people", methods=["POST"])

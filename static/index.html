@@ -313,7 +313,14 @@
         <h2>People</h2>
         <p>Permanent roster — entered once, kept forever</p>
       </div>
-      <button class="btn btn-primary" onclick="openAddPersonModal()">＋ Add person</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="exportRoster()">↓ Export roster</button>
+        <label class="btn btn-ghost" style="cursor:pointer">
+          ↑ Import roster
+          <input type="file" id="roster-file" accept=".json" style="display:none" onchange="importRoster()">
+        </label>
+        <button class="btn btn-primary" onclick="openAddPersonModal()">＋ Add person</button>
+      </div>
     </div>
     <div class="people-layout card">
       <div class="people-list-wrap">
@@ -550,6 +557,46 @@ function rotBadge(r) {
 function sessBadge(s) { return '<span class="badge badge-' + s.toLowerCase() + '">' + s + '</span>'; }
 
 /* ── PEOPLE ── */
+/* ── People page: export / import full roster (backup & restore) ── */
+async function exportRoster() {
+  try {
+    const res = await fetch('/api/people/export');
+    if (!res.ok) { alert('Export failed'); return; }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const fname = match ? match[1] : 'oncoscheduler_roster.json';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+  } catch(e) {
+    alert('Export failed: ' + e.message);
+  }
+}
+
+async function importRoster() {
+  const f = document.getElementById('roster-file').files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const res = await fetch('/api/people/import', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (d.error) { alert('Import error: ' + (d.message || d.error)); return; }
+    let msg = 'Added ' + d.added + ', skipped ' + d.skipped + ' (already existed).';
+    if (d.skipped > 0) {
+      const skippedNames = d.details.filter(x => x.action === 'skipped').map(x => x.name);
+      msg += '\nSkipped: ' + skippedNames.join(', ');
+    }
+    alert(msg);
+    document.getElementById('roster-file').value = '';
+    loadPeople();
+  } catch(e) {
+    alert('Import failed: ' + e.message);
+  }
+}
+
 async function loadPeople() {
   const res = await fetch('/api/people');
   state.people = await res.json();
