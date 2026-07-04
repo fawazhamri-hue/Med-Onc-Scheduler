@@ -303,6 +303,20 @@ def api_solve():
         # pins/exclusions; the server adds people, recurring LTC pins,
         # recurring exclusions, and date-range leaves.
         payload = _merge_db_roster(payload, db)
+
+        # --- DIAGNOSTIC TAP (temporary, for double-booking investigation) ---
+        # Dumps the exact merged payload the solver receives, every solve,
+        # overwriting the previous one. Does not affect solving in any way.
+        try:
+            dump_path = os.path.join(os.path.dirname(DB_PATH) or ".",
+                                     "last_solve_payload.json")
+            with open(dump_path, "w") as f:
+                json.dump({"timestamp": datetime.now().isoformat(),
+                          "payload": payload}, f, indent=2, default=str)
+        except Exception:
+            pass  # diagnostic failure must never break solving
+        # --- END DIAGNOSTIC TAP ---
+
         fellows_df, residents_df, clinics_df, pins_df, availability_df, date_map = \
             _assemble_from_payload(payload)
         cfg = _build_cfg(db)
@@ -320,6 +334,19 @@ def api_solve():
         })
     except Exception as e:
         return jsonify({"error": traceback.format_exc(), "message": str(e)}), 500
+
+
+@app.route("/api/debug/last-payload", methods=["GET"])
+def api_debug_last_payload():
+    """Temporary diagnostic route — returns the exact payload the solver
+    received on the most recent /api/solve call. Used to investigate the
+    double-booking bug with real data instead of reconstructions."""
+    dump_path = os.path.join(os.path.dirname(DB_PATH) or ".",
+                             "last_solve_payload.json")
+    if not os.path.exists(dump_path):
+        return jsonify({"error": "No solve has run yet on this server."}), 404
+    with open(dump_path) as f:
+        return jsonify(json.load(f))
 
 
 @app.route("/api/export/xlsx", methods=["POST"])
