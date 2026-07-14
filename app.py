@@ -364,7 +364,7 @@ def validate_schedule(schedule, fellows, residents):
       V3  person assigned more clinics than their Max   -> error
       V4  chemo slot with 0 helpers                      -> error
       V5  person on Leave/inactive but still assigned    -> error
-      V6  person under their Min                          -> info (not urgent)
+      V6  active person under their Min                   -> error
     Returns a list of {"level": "error"|"info", "msg": str}.
     """
     out = []
@@ -408,24 +408,27 @@ def validate_schedule(schedule, fellows, residents):
                             "msg": f"ADDON STAFFING: {r.get('Day')} {r.get('Session')} "
                                    f"{r.get('Consultant')} has {k} helper(s) (must be exactly 1)"})
 
-    # V3 / V5 / V6: totals vs Min/Max/Status
+    # V3 / V5 / V6: totals vs Min/Max/Status. Iterate over the roster,
+    # not only assigned names, so an active person with zero assignments is also
+    # caught by the hard-min audit after a manual browser edit.
     totals = {}
     for r in (schedule or []):
         for n in names_of(r):
             totals[n.lower()] = totals.get(n.lower(), 0) + 1
-    for n, t in totals.items():
-        if n in limits:
-            mn, mx, status = limits[n]
-            if str(status).lower() == "leave":
+    for n, (mn, mx, status) in limits.items():
+        t = totals.get(n, 0)
+        if str(status).lower() == "leave":
+            if t > 0:
                 out.append({"level": "error",
                             "msg": f"ON-LEAVE ASSIGNED: {n.title()} is marked Leave/"
                                    f"inactive but has {t} clinic(s) this week"})
-            if t > mx:
-                out.append({"level": "error",
-                            "msg": f"OVER MAX: {n.title()} has {t} clinics (max {mx})"})
-            elif t < mn:
-                out.append({"level": "info",
-                            "msg": f"Under min: {n.title()} has {t} clinics (min {mn})"})
+            continue
+        if t > mx:
+            out.append({"level": "error",
+                        "msg": f"OVER MAX: {n.title()} has {t} clinics (max {mx})"})
+        if t < mn:
+            out.append({"level": "error",
+                        "msg": f"UNDER MIN: {n.title()} has {t} clinics (min {mn})"})
 
     # V4: chemo slot uncovered
     for r in (schedule or []):

@@ -454,9 +454,10 @@
     <div class="card" style="padding:20px;max-width:700px">
       <div id="rules-form"></div>
       <div class="note-box" style="margin-top:20px">
-Weight ordering invariant (don't break this):<br>
-chemo_shortfall = addon_uncovered  &gt;  fellow_short  &gt;  capacity_short ≥ assist_for_chemo  &gt;<br>
-under_min_res = rotation_fairness  &gt;  under_min_fellow  &gt;  over_assign  &gt;  rotation_match  &gt;  fairness  &gt;  band_pref
+Hard rules: each active person must reach Min, cannot exceed Max, cannot be double-booked,<br>
+and must obey role, availability, and pin restrictions.<br>
+Priority guide: critical coverage &gt; seventh-clinic avoidance &gt; educational/chemo balance &gt;<br>
+add-on fallback preference &gt; ordinary rotation and composition preferences.
       </div>
     </div>
   </div>
@@ -1645,12 +1646,16 @@ async function applySelected() {
 
 /* ── RULES ── */
 const RULE_GROUPS = [
-  { title: 'Coverage (hard priorities)',
+  { title: 'Critical coverage',
     keys: ['w_chemo_shortfall','w_addon_uncovered','w_fellow_short','w_capacity_short'] },
-  { title: 'Distribution & fairness',
-    keys: ['w_under_min_res','w_rotation_fairness','w_under_min_fellow','w_over_assign',
-           'w_rotation_match','w_fairness','w_band_pref','w_assist_for_chemo'] },
-  { title: 'Chemoassessment', keys: ['chemo_active','chemo_slots'] },
+  { title: 'Workload & educational balance',
+    keys: ['w_workload_spread','w_seventh_clinic','w_rotation_fairness',
+           'w_in_rotation_short','preferred_in_rotation_min','w_rotation_match',
+           'w_over_assign','w_fairness','w_band_pref'] },
+  { title: 'Add-on fallback', keys: ['w_cross_rotation_addon'] },
+  { title: 'Chemoassessment',
+    keys: ['w_chemo_repeat','preferred_chemo_max','w_assist_for_chemo',
+           'chemo_active','chemo_slots'] },
   { title: 'Solver', keys: ['solver_timeout_s'] },
 ];
 async function loadRules() {
