@@ -53,32 +53,11 @@ class SolverConfig:
     # saves 200 — comfortably > over_assign (110), so the swap is preferred. Still well
     # below w_fellow_short (1500) so it can't override a genuine fellow-coverage need.
     w_rotation_fairness:    int = 200
-    # True workload balancing among fellows. This directly penalizes the gap
-    # between the busiest and least busy fellow, unlike total-over-min which can
-    # be identical for 7/5/5 and 6/6/5 distributions.
-    w_workload_spread:      int = 350
-    # A sixth clinic is acceptable. A seventh should be used only when it
-    # prevents a more important coverage problem.
-    w_seventh_clinic:       int = 1200
-    # Soft educational target for fellows. Kept soft because some weeks do not
-    # contain enough clinics in every rotation, but missing the target should be
-    # expensive enough to affect the schedule materially.
-    w_in_rotation_short:    int = 900
-    preferred_in_rotation_min: int = 3
     w_double_session:       int = 2
     w_assist_for_chemo:     int = 250   # makes assistants preferred over fellows on chemo;
                                         # must exceed w_rotation_match (100) so the solver
                                         # picks an assistant on chemo even when a fellow
                                         # could earn rotation-match elsewhere
-    # Repeated chemoassessment is allowed when necessary, but more than two
-    # sessions per fellow should be increasingly unattractive.
-    w_chemo_repeat:         int = 900
-    preferred_chemo_max:    int = 2
-    # Add-ons prefer a fellow from the same rotation. A cross-rotation fellow or
-    # assistant is a fallback rather than forbidden. This penalty is lower than
-    # the seventh-clinic penalty, so the solver normally uses the matching fellow
-    # up to six clinics, then considers fallback coverage instead of forcing seven.
-    w_cross_rotation_addon: int = 650
     w_band_pref:            int = 25   # soft preference penalty per band-rule deviation
     # ADD-ON clinics (consultant on leave; ~8-10 patients covered solo by a fellow or assistant).
     # Per chief: leaving an add-on unfilled is as unacceptable as leaving chemo unfilled,
@@ -591,65 +570,6 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
     DAYS = sorted({c["day"] for c in clinics})
     SESSIONS = ["AM", "PM"]
 
-    # Fast hard-min feasibility screen. Because one person cannot attend two
-    # clinics in the same session, the relevant upper bound is the number of
-    # distinct eligible day/session slots, not the raw number of clinics.
-    minimum_slot_issues = []
-    for f in fellows:
-        eligible_sessions = set()
-        for c in clinics:
-            if (f["name"], c["day"], c["session"]) in avail_lookup:
-                continue
-            if c["is_chemo"]:
-                eligible = f["role"] in ("fellow", "assistant")
-            elif c["is_addon"]:
-                external_present = any(
-                    r["fellow"] not in fellow_names
-                    and r["day"] == c["day"]
-                    and r["session"] == c["session"]
-                    and r["consultant"] == c["consultant"]
-                    for r in purple_rules
-                )
-                eligible = (not external_present
-                            and f["role"] in ("fellow", "assistant"))
-            elif f["is_np"]:
-                eligible = c["specialty"].lower() == f["rotation"].lower()
-            else:
-                eligible = True
-            if eligible:
-                eligible_sessions.add((c["day"], c["session"]))
-
-        if len(eligible_sessions) < f["min"]:
-            minimum_slot_issues.append({
-                "person": f["name"],
-                "minimum": f["min"],
-                "eligible_sessions": len(eligible_sessions),
-                "role": f["role"],
-            })
-
-    if minimum_slot_issues:
-        detail = "; ".join(
-            f"{x['person']} needs {x['minimum']} but has only "
-            f"{x['eligible_sessions']} eligible session(s)"
-            for x in minimum_slot_issues
-        )
-        return {
-            "status": "INFEASIBLE",
-            "message": "Hard minimum clinic requirements cannot be met. " + detail,
-            "diagnostics": {
-                "demand": demand,
-                "capacity_min": capacity_min,
-                "capacity_max": capacity_max,
-                "minimum_slot_issues": minimum_slot_issues,
-            },
-            "schedule": [], "fellows_summary": [],
-            "residents_summary": [], "assistants_summary": [],
-            "availability": availability,
-            "availability_orphans": availability_orphans,
-            "purple_orphans_leave": purple_orphans_leave,
-            "on_leave": on_leave,
-        }
-
     # --- Build CP-SAT model ---
     model = cp_model.CpModel()
     assign = {(c["id"], f["name"]): model.NewBoolVar(f"c{c['id']}_{f['name']}")
@@ -672,9 +592,8 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
             model.Add(sum(assign[(c["id"], f["name"])] for f in fellows) <= 1)
 
     # Add-on eligibility (HARD):
-    #   - Fellows may cover any add-on, but same-rotation coverage is strongly
-    #     preferred in the objective. This creates a safe fallback when the only
-    #     matching fellow would otherwise be pushed to an excessive workload.
+    #   - Fellow: only if their rotation matches the clinic's specialty
+    #     UNLESS purple-pinned to this slot (v12.2: chief override, same as externals).
     #   - Assistant: eligible regardless of specialty (assistants are cross-trained,
     #     and residents.xlsx has no Rotation column to filter on).
     #   - Resident (non-assistant): not eligible.
@@ -682,8 +601,7 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
     #   Also enforces a HARD upper bound of 1 helper per add-on (chief: "always 1 person";
     #   without this, two rotation-matching fellows would overstaff the slot since each
     #   earns +100 rotation reward against only -110 over_assign cost).
-    # Pre-compute purple-pinned set. Explicit chief pins are exempt from the
-    # cross-rotation preference penalty later in the objective.
+    # Pre-compute purple-pinned set for AddOn rotation override (v12.2).
     purple_addon_pins = set()  # set of (person_lower, clinic_id)
     for c in clinics:
         if not c.get("is_addon"):
@@ -697,10 +615,13 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         if not c["is_addon"]:
             continue
         for f in fellows:
+            is_pinned_here = (f["name"].lower(), c["id"]) in purple_addon_pins
             if f["role"] == "assistant":
                 eligible = True
             elif f["role"] == "fellow":
-                eligible = True
+                # v12.2: purple override bypasses rotation match
+                eligible = (is_pinned_here
+                            or c["specialty"].lower() == f["rotation"].lower())
             else:
                 eligible = False  # residents (non-assistant) and NPs
             if not eligible:
@@ -845,19 +766,15 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         cap_terms = [assign[(c["id"], f["name"])] * _cap_unit(f) for f in fellows]
         model.Add(sum(cap_terms) + cs >= c["patient_cap_req"])
 
-    # Workload bounds: hard min and hard max.
-    # The previous soft-min model could deliberately leave people below their
-    # configured minimum when other objective penalties were cheaper. Minimums
-    # are now true roster requirements. The zero-valued under_min variable is
-    # retained for backward-compatible summaries and diagnostics.
+    # Workload bounds: hard max, soft min
     totals = {}
     under_min = {}
     for f in fellows:
         t = model.NewIntVar(0, f["max"], f"total_{f['name']}")
         model.Add(t == sum(assign[(c["id"], f["name"])] for c in clinics))
-        model.Add(t >= f["min"])
         model.Add(t <= f["max"])
-        um = model.NewIntVar(0, 0, f"under_{f['name']}")
+        um = model.NewIntVar(0, f["min"], f"under_{f['name']}")
+        model.Add(t + um >= f["min"])
         totals[f["name"]] = t
         under_min[f["name"]] = um
 
@@ -919,71 +836,6 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         over_min[f["name"]] = om
     total_over_min = sum(over_min.values()) if over_min else model.NewConstant(0)
 
-    # Fellow workload ceiling preference. Six clinics is acceptable; only the
-    # seventh-and-beyond portion carries an additional strong penalty.
-    actual_fellows = [f for f in fellows if f["role"] == "fellow"]
-    seventh_clinic_units = {}
-    for f in actual_fellows:
-        seventh = model.NewIntVar(0, max(0, f["max"] - 6),
-                                  f"seventh_units_{f['name']}")
-        model.Add(seventh >= totals[f["name"]] - 6)
-        seventh_clinic_units[f["name"]] = seventh
-    total_seventh_units = (sum(seventh_clinic_units.values())
-                           if seventh_clinic_units else model.NewConstant(0))
-
-    # Soft educational floor for in-rotation exposure. The target is capped by
-    # the number of eligible in-rotation sessions in this specific week, so the
-    # solver is not punished for clinics that simply do not exist.
-    in_rotation_counts = {}
-    in_rotation_short = {}
-    for f in actual_fellows:
-        matching = [c for c in clinics
-                    if not c["is_chemo"]
-                    and c["specialty"].lower() == f["rotation"].lower()]
-        potential_sessions = set()
-        for c in matching:
-            if (f["name"], c["day"], c["session"]) in avail_lookup:
-                continue
-            if c["is_addon"]:
-                external_present = any(
-                    r["fellow"] not in fellow_names
-                    and r["day"] == c["day"]
-                    and r["session"] == c["session"]
-                    and r["consultant"] == c["consultant"]
-                    for r in purple_rules
-                )
-                if external_present:
-                    continue
-            potential_sessions.add((c["day"], c["session"]))
-
-        max_count = len(matching)
-        cnt = model.NewIntVar(0, max_count, f"in_rotation_{f['name']}")
-        model.Add(cnt == sum(assign[(c["id"], f["name"])] for c in matching))
-        in_rotation_counts[f["name"]] = cnt
-
-        target = min(cfg.preferred_in_rotation_min, f["min"],
-                     len(potential_sessions))
-        short = model.NewIntVar(0, target, f"in_rotation_short_{f['name']}")
-        model.Add(cnt + short >= target)
-        in_rotation_short[f["name"]] = short
-    total_in_rotation_short = (sum(in_rotation_short.values())
-                               if in_rotation_short else model.NewConstant(0))
-
-    # Repeated chemoassessment preference. This is intentionally soft because
-    # staffing shortages may require one fellow to cover more than two sessions.
-    chemo_repeat_excess = {}
-    for f in actual_fellows:
-        chemo_count_expr = sum(assign[(c["id"], f["name"])]
-                               for c in clinics if c["is_chemo"])
-        max_excess = max(0, sum(1 for c in clinics if c["is_chemo"])
-                         - cfg.preferred_chemo_max)
-        excess = model.NewIntVar(0, max_excess,
-                                 f"chemo_repeat_{f['name']}")
-        model.Add(excess >= chemo_count_expr - cfg.preferred_chemo_max)
-        chemo_repeat_excess[f["name"]] = excess
-    total_chemo_repeat = (sum(chemo_repeat_excess.values())
-                          if chemo_repeat_excess else model.NewConstant(0))
-
     # Per-rotation in-rotation fairness (v12).
     # Group fellows by rotation. For each rotation with ≥2 fellows, compute the
     # in-rotation clinic count per fellow and penalize the spread (max - min).
@@ -1005,7 +857,11 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         if max_possible == 0:
             continue
         for f in group:
-            in_rot_counts.append(in_rotation_counts[f["name"]])
+            in_rot_clinics = [assign[(c["id"], f["name"])] for c in clinics
+                              if c["specialty"].lower() == rot_lower]
+            cnt = model.NewIntVar(0, max_possible, f"in_rot_{rot_lower}_{f['name']}")
+            model.Add(cnt == sum(in_rot_clinics))
+            in_rot_counts.append(cnt)
         rot_max = model.NewIntVar(0, max_possible, f"max_in_{rot_lower}")
         rot_min = model.NewIntVar(0, max_possible, f"min_in_{rot_lower}")
         rot_spread = model.NewIntVar(0, max_possible, f"spread_in_{rot_lower}")
@@ -1017,8 +873,9 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
     total_rotation_spread = (sum(rotation_spread_vars.values())
                              if rotation_spread_vars else model.NewConstant(0))
 
-    # True fellow workload spread, now included in the objective.
-    fellow_only = [totals[f["name"]] for f in actual_fellows]
+    # Keep spread variable as a diagnostic only (not in objective) — useful in logs
+    fellow_only = [totals[f["name"]] for f in fellows
+                   if not f["is_resident"] and not f["is_assistant"]]
     if fellow_only:
         max_t = model.NewIntVar(0, 100, "max_t")
         min_t = model.NewIntVar(0, 100, "min_t")
@@ -1059,20 +916,6 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
                       if f["is_resident"] or f["is_assistant"])
     assist_chemo = sum(assign[(c["id"], f["name"])] for c in clinics for f in fellows
                        if c["is_chemo"] and f["is_assistant"])
-
-    # Add-on fallback penalty. Same-rotation fellows are preferred. A
-    # cross-rotation fellow or an assistant remains available when concentrating
-    # all add-ons on one matching fellow would otherwise create an excessive load.
-    # Explicit purple pins are deliberate chief overrides and carry no penalty.
-    cross_rotation_addon = sum(
-        assign[(c["id"], f["name"])]
-        for c in clinics if c["is_addon"]
-        for f in fellows
-        if f["role"] in ("fellow", "assistant")
-        and (f["role"] == "assistant"
-             or c["specialty"].lower() != f["rotation"].lower())
-        and (f["name"].lower(), c["id"]) not in purple_addon_pins
-    )
 
     total_fellow_short = sum(fellow_short.values()) if fellow_short else 0
     total_cap_short    = sum(cap_short.values())    if cap_short    else 0
@@ -1144,11 +987,6 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         -cfg.w_under_min_res    * under_min_r,
         -cfg.w_fairness         * total_over_min,
         -cfg.w_rotation_fairness * total_rotation_spread,
-        -cfg.w_workload_spread  * spread,
-        -cfg.w_seventh_clinic   * total_seventh_units,
-        -cfg.w_in_rotation_short * total_in_rotation_short,
-        -cfg.w_chemo_repeat     * total_chemo_repeat,
-        -cfg.w_cross_rotation_addon * cross_rotation_addon,
         cfg.w_assist_for_chemo  * assist_chemo,
         -1                      * band_pref_penalty,     # weight baked in above
     ]
@@ -1172,16 +1010,13 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
         return {
             "status": status_name,
             "message": (
-                f"No feasible schedule under the hard minimum/maximum, role, "
-                f"availability, pin, and no-double-booking rules. "
-                f"Total demand={demand}, sum of minimums={capacity_min}, "
-                f"sum of maximums={capacity_max}. Review the roster minimums "
-                f"and restricted sessions first."
+                f"No feasible schedule. Total demand={demand} slots, "
+                f"sum of mins={capacity_min}, sum of maxes={capacity_max}. "
+                f"{'Capacity too low.' if demand > capacity_max else ''}"
             ),
             "diagnostics": {"demand": demand,
                             "capacity_min": capacity_min,
-                            "capacity_max": capacity_max,
-                            "minimum_slot_issues": minimum_slot_issues},
+                            "capacity_max": capacity_max},
             "schedule": [], "fellows_summary": [],
             "residents_summary": [], "assistants_summary": [],
             "availability": availability,
@@ -1298,13 +1133,8 @@ def solve(clinics_path, fellows_path, residents_path, purple_path,
             "under_min_fellows": solver.Value(under_min_f),
             "under_min_residents": solver.Value(under_min_r),
             "spread": solver.Value(spread),
-            "seventh_clinic_units": solver.Value(total_seventh_units),
-            "in_rotation_short": solver.Value(total_in_rotation_short),
-            "chemo_repeat_excess": solver.Value(total_chemo_repeat),
-            "cross_rotation_addons": solver.Value(cross_rotation_addon),
             "demand": demand,
             "capacity_min": capacity_min,
             "capacity_max": capacity_max,
-            "minimum_slot_issues": minimum_slot_issues,
         },
     }
